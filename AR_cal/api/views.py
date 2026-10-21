@@ -21,6 +21,13 @@ from .service.image_tracker import (
 )
 
 
+def _by_project(queryset, request):
+    project = request.query_params.get("project")
+    if project:
+        queryset = queryset.filter(project_id=project)
+    return queryset
+
+
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated]
@@ -37,8 +44,9 @@ class TargetImageViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return TargetImage.objects.filter(
-            project__user=self.request.user
+        return _by_project(
+            TargetImage.objects.filter(project__user=self.request.user),
+            self.request,
         )
 
     def perform_create(self, serializer):
@@ -50,8 +58,9 @@ class ModelAssetViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return ModelAsset.objects.filter(
-            project__user=self.request.user
+        return _by_project(
+            ModelAsset.objects.filter(project__user=self.request.user),
+            self.request,
         )
 
 
@@ -60,8 +69,9 @@ class ARExperienceViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return ARExperience.objects.filter(
-            project__user=self.request.user
+        return _by_project(
+            ARExperience.objects.filter(project__user=self.request.user),
+            self.request,
         )
 
 

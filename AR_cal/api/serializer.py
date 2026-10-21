@@ -21,7 +21,7 @@ class TargetImageSerializer(serializers.ModelSerializer):
             "id", "project", "name", "image", "target_width",
             "is_active", "tracking_data", "created_at",
         ]
-        read_only_fields = ["id", "tracking_data", "created_at"]
+        read_only_fields = ["id", "tracking_data", "created_at", "is_active"]
 
     def validate_project(self, project):
         request = self.context.get("request")
@@ -46,7 +46,7 @@ class ModelAssetSerializer(serializers.ModelSerializer):
             "id", "project", "name", "model_file", "format",
             "is_active", "created_at",
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "created_at", "is_active"]
 
     def validate_project(self, project):
         request = self.context.get("request")
@@ -58,15 +58,24 @@ class ModelAssetSerializer(serializers.ModelSerializer):
 
 
 class ARExperienceSerializer(serializers.ModelSerializer):
+    published_slug = serializers.SerializerMethodField()
+
     class Meta:
         model = ARExperience
         fields = [
-            "id", "project", "target_image", "model_asset", "status",
+            "id", "project", "name", "target_image", "model_asset", "status",
             "position_x", "position_y", "position_z",
             "rotation_x", "rotation_y", "rotation_z", "scale",
+            "published_slug",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at", "published_slug"]
+
+    def get_published_slug(self, obj):
+        published = getattr(obj, "published_experience", None)
+        if published and published.is_active:
+            return published.slug or str(published.public_id)
+        return None
 
     def validate(self, attrs):
         request = self.context.get("request")

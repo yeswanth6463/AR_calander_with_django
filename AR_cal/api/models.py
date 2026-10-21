@@ -131,6 +131,7 @@ class ARExperience(models.Model):
         on_delete=models.CASCADE,
         related_name="experiences",
     )
+    name = models.CharField(max_length=150, blank=True, default="")
     target_image = models.ForeignKey(
         TargetImage,
         on_delete=models.PROTECT,
@@ -190,6 +191,14 @@ class PublishedExperience(models.Model):
         default=uuid.uuid4,
         unique=True,
         editable=False,
+    )
+
+    slug = models.SlugField(
+        max_length=80,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="Custom name for the public viewer link.",
     )
 
     version = models.PositiveIntegerField(default=1)

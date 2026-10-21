@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Django
+AR_cal/db.sqlite3
+AR_cal/staticfiles/
+AR_cal/static/
+
+# User-uploaded media (persisted via Docker volume / host mount)
+AR_cal/media/*
+!AR_cal/media/.gitkeep
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Logs & OS
+*.log
+logs/
+.DS_Store
+Thumbs.db
