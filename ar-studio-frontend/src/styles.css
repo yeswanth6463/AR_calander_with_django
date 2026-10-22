@@ -140,7 +140,25 @@ label.field span { display: block; margin-bottom: 4px; color: var(--muted); font
 .slider-row span { color: var(--muted); font-size: 12px; }
 .slider-row input[type='number'] { padding: 4px 8px; font-size: 12px; }
 
-.viewer-root { position: fixed; inset: 0; background: #000; }
+/* Fixed layer must track the *dynamic* viewport (mobile URL bar), not the
+   tall layout viewport, or the page appears to extend/scroll past the screen. */
+.viewer-root {
+  position: fixed;
+  inset: 0;
+  height: 100vh;
+  height: 100dvh;
+  background: #000;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+}
+/* Lock document scroll while the viewer owns the screen (:has fallback for
+   browsers without it is the JS body.viewer-mode class in Viewer.jsx). */
+html:has(.viewer-root), body:has(.viewer-root) {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
 .viewer-root video, .viewer-root canvas.gl {
   position: absolute;
   inset: 0;
@@ -149,23 +167,24 @@ label.field span { display: block; margin-bottom: 4px; color: var(--muted); font
   object-fit: cover;
 }
 .viewer-root canvas.gl { pointer-events: none; }
+/* Top-right: bottom-center is reserved for the animation panel. */
 .viewer-hud {
   position: absolute;
-  left: 12px;
-  bottom: 12px;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
   background: rgba(10, 12, 18, 0.7);
   padding: 10px 14px;
   border-radius: 10px;
   font-family: ui-monospace, monospace;
   font-size: 12px;
-  max-width: 90vw;
+  max-width: 60vw;
 }
 .viewer-hud .found { color: var(--ok); }
 .viewer-hud .lost { color: var(--warn); }
 .viewer-back {
   position: absolute;
-  top: 12px;
-  left: 12px;
+  top: max(12px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
   background: rgba(10, 12, 18, 0.7);
   color: #fff;
   padding: 8px 12px;
@@ -173,6 +192,68 @@ label.field span { display: block; margin-bottom: 4px; color: var(--muted); font
   z-index: 2;
 }
 .error-box { color: var(--warn); padding: 20px; text-align: center; }
+
+/* ---------- Animation transport (Blender/Unity-style) ---------- */
+
+.anim-panel {
+  position: absolute;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(94vw, 560px);
+  background: rgba(10, 12, 18, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 3;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.anim-row { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; }
+.anim-panel button {
+  height: 40px;
+  min-width: 40px;
+  padding: 0 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.anim-panel button:hover { border-color: var(--accent); }
+.anim-panel button.anim-primary {
+  width: 56px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.anim-panel button.anim-collapse { height: 32px; min-width: 32px; font-size: 12px; color: var(--muted); }
+.anim-panel select {
+  height: 40px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 14px;
+}
+.anim-panel select.anim-clip { max-width: 160px; }
+.anim-timeline { gap: 10px; }
+.anim-timeline input[type='range'] { flex: 1; min-width: 120px; accent-color: var(--accent); }
+.anim-readout {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
 
 /* ---------- Game-engine studio layout ---------- */
 

@@ -4,6 +4,8 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { ImageTracker } from '../ar/tracker'
 import { poseFromHomography, smoothCorners } from '../ar/pose'
+import { createAnimationController } from '../ar/animation'
+import AnimationPanel from '../components/AnimationPanel'
 import { api } from '../api'
 
 const rel = (url) => {
@@ -68,14 +70,18 @@ export default function Viewer() {
   const { publicId } = useParams()
   const videoRef = useRef(null)
   const glRef = useRef(null)
+  const animRef = useRef(null)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('loading experience…')
   const [trackState, setTrackState] = useState('idle')
   const [fps, setFps] = useState(0)
+  const [animCtl, setAnimCtl] = useState(null)
 
   useEffect(() => {
     let disposed = false
     let stop = () => {}
+    // JS scroll-lock fallback for browsers without :has() support.
+    document.body.classList.add('viewer-mode')
 
     ;(async () => {
       try {
@@ -153,6 +159,14 @@ export default function Viewer() {
           model.scale.setScalar(s)
           model.position.sub(center.multiplyScalar(s))
           fit.add(model)
+          if (!disposed && gltf.animations?.length) {
+            animRef.current?.dispose()
+            const ctl = createAnimationController(gltf)
+            if (exp.animation) ctl.applySettings(exp.animation)
+            else ctl.play()
+            animRef.current = ctl
+            setAnimCtl(ctl)
+          }
           setStatus('point your camera at the target image')
         }, undefined, () => {
           setStatus('target ready — model failed to load (check format)')
@@ -163,11 +177,14 @@ export default function Viewer() {
         let frames = 0
         let fpsClock = performance.now()
         let raf = 0
+        const clock = new THREE.Clock()
         const trackerRef = { current: null }
         trackerRef.current = tracker
 
         const loop = () => {
           raf = requestAnimationFrame(loop)
+          const dt = clock.getDelta()
+          animRef.current?.update(dt)
           frames++
           const now = performance.now()
           if (now - fpsClock >= 1000) {
@@ -196,6 +213,8 @@ export default function Viewer() {
 
         stop = () => {
           cancelAnimationFrame(raf)
+          animRef.current?.dispose()
+          animRef.current = null
           stream.getTracks().forEach((t) => t.stop())
           renderer.dispose()
           scene.traverse((o) => {
@@ -212,6 +231,7 @@ export default function Viewer() {
     return () => {
       disposed = true
       stop()
+      document.body.classList.remove('viewer-mode')
     }
   }, [publicId])
 
@@ -228,6 +248,7 @@ export default function Viewer() {
         </div>
         {error ? <div className="lost">{error}</div> : status !== 'ready' && <div className="muted">{status}</div>}
       </div>
+      {animCtl && <AnimationPanel controller={animCtl} />}
     </div>
   )
 }

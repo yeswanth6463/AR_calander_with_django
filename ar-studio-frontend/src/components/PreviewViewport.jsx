@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { createAnimationController } from '../ar/animation'
+import AnimationPanel from './AnimationPanel'
 
 const deg = THREE.MathUtils.degToRad
 
@@ -19,8 +21,10 @@ export default function PreviewViewport({ target, asset, transform }) {
   const mountRef = useRef(null)
   const worldRef = useRef(null)
   const modelGroupRef = useRef(null)
+  const animCtlRef = useRef(null)
   const [aspect, setAspect] = useState(0.75)
   const [modelState, setModelState] = useState('')
+  const [animCtl, setAnimCtl] = useState(null)
 
   useEffect(() => {
     if (!target?.image) return
@@ -97,8 +101,11 @@ export default function PreviewViewport({ target, asset, transform }) {
     worldRef.current = world
 
     let raf = 0
+    const clock = new THREE.Clock()
     const animate = () => {
       raf = requestAnimationFrame(animate)
+      const dt = clock.getDelta()
+      animCtlRef.current?.update(dt)
       controls.update()
       renderer.render(scene, camera)
     }
@@ -116,6 +123,9 @@ export default function PreviewViewport({ target, asset, transform }) {
 
     return () => {
       cancelAnimationFrame(raf)
+      animCtlRef.current?.dispose()
+      animCtlRef.current = null
+      setAnimCtl(null)
       window.removeEventListener('resize', onResize)
       themeObserver.disconnect()
       controls.dispose()
@@ -157,6 +167,9 @@ export default function PreviewViewport({ target, asset, transform }) {
       })
     }
     modelGroupRef.current = null
+    animCtlRef.current?.dispose()
+    animCtlRef.current = null
+    setAnimCtl(null)
     if (!target) return
 
     const planeGeo = new THREE.PlaneGeometry(1, aspect)
@@ -197,6 +210,12 @@ export default function PreviewViewport({ target, asset, transform }) {
           const c = box2.getCenter(new THREE.Vector3())
           model.position.set(-c.x, -box2.min.y, -c.z)
           modelGroup.add(model)
+          if (gltf.animations?.length) {
+            const ctl = createAnimationController(gltf)
+            ctl.play()
+            animCtlRef.current = ctl
+            setAnimCtl(ctl)
+          }
           setModelState('')
         },
         (evt) => {
@@ -231,6 +250,7 @@ export default function PreviewViewport({ target, asset, transform }) {
           imperatively-appended WebGL canvas when the badge toggles below. */}
       <div className="viewport-canvas" ref={mountRef} />
       {modelState && <div className="viewport-badge">{modelState}</div>}
+      {animCtl && <AnimationPanel controller={animCtl} />}
     </div>
   )
 }
