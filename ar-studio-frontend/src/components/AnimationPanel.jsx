@@ -6,7 +6,7 @@ const LOOP_ORDER = ['repeat', 'once', 'pingpong']
 
 const fmt = (t) => (Number.isFinite(t) ? t.toFixed(2) : '0.00')
 
-export default function AnimationPanel({ controller }) {
+export default function AnimationPanel({ controller, className = '' }) {
   const [st, setSt] = useState(() => controller.getState())
   const [open, setOpen] = useState(true)
   // Re-sync when a new controller arrives (model rebuilt) — render-phase state
@@ -36,7 +36,7 @@ export default function AnimationPanel({ controller }) {
   }
 
   return (
-    <div className="anim-panel">
+    <div className={`anim-panel ${className}`}>
       <div className="anim-row">
         <button
           className="anim-collapse"

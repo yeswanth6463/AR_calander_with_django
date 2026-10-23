@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { ImageTracker } from '../ar/tracker'
 import { poseFromHomography, smoothCorners } from '../ar/pose'
 import { createAnimationController } from '../ar/animation'
+import { createMediaPanel } from '../ar/mediaPanel'
 import AnimationPanel from '../components/AnimationPanel'
 import { api } from '../api'
 
@@ -71,6 +72,7 @@ export default function Viewer() {
   const videoRef = useRef(null)
   const glRef = useRef(null)
   const animRef = useRef(null)
+  const mediaPanelRef = useRef(null)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('loading experience…')
   const [trackState, setTrackState] = useState('idle')
@@ -146,31 +148,43 @@ export default function Viewer() {
           THREE.MathUtils.degToRad(transform.rotation[1]),
           THREE.MathUtils.degToRad(transform.rotation[2])
         )
-        fit.scale.setScalar(transform.scale)
+        fit.scale.set(...(transform.scale_xyz || Array(3).fill(transform.scale)))
 
-        setStatus('loading 3D model…')
-        new GLTFLoader().load(rel(exp.model.url), (gltf) => {
-          const model = gltf.scene
-          const box = new THREE.Box3().setFromObject(model)
-          const size = box.getSize(new THREE.Vector3())
-          const center = box.getCenter(new THREE.Vector3())
-          const maxDim = Math.max(size.x, size.y, size.z) || 1
-          const s = 0.5 / maxDim
-          model.scale.setScalar(s)
-          model.position.sub(center.multiplyScalar(s))
-          fit.add(model)
-          if (!disposed && gltf.animations?.length) {
-            animRef.current?.dispose()
-            const ctl = createAnimationController(gltf)
-            if (exp.animation) ctl.applySettings(exp.animation)
-            else ctl.play()
-            animRef.current = ctl
-            setAnimCtl(ctl)
+        if (['mp4', 'webm', 'gif'].includes(exp.model.format)) {
+          setStatus('loading animated media…')
+          const panel = await createMediaPanel(rel(exp.model.url), exp.model.format)
+          if (disposed) {
+            panel.dispose()
+            return
           }
+          mediaPanelRef.current = panel
+          fit.add(panel.mesh)
           setStatus('point your camera at the target image')
-        }, undefined, () => {
-          setStatus('target ready — model failed to load (check format)')
-        })
+        } else {
+          setStatus('loading 3D model…')
+          new GLTFLoader().load(rel(exp.model.url), (gltf) => {
+            const model = gltf.scene
+            const box = new THREE.Box3().setFromObject(model)
+            const size = box.getSize(new THREE.Vector3())
+            const center = box.getCenter(new THREE.Vector3())
+            const maxDim = Math.max(size.x, size.y, size.z) || 1
+            const s = 0.5 / maxDim
+            model.scale.setScalar(s)
+            model.position.sub(center.multiplyScalar(s))
+            fit.add(model)
+            if (!disposed && gltf.animations?.length) {
+              animRef.current?.dispose()
+              const ctl = createAnimationController(gltf)
+              if (exp.animation) ctl.applySettings(exp.animation)
+              else ctl.play()
+              animRef.current = ctl
+              setAnimCtl(ctl)
+            }
+            setStatus('point your camera at the target image')
+          }, undefined, () => {
+            setStatus('target ready — model failed to load (check format)')
+          })
+        }
 
         let smoothed = null
         let lastFound = 0
@@ -185,6 +199,7 @@ export default function Viewer() {
           raf = requestAnimationFrame(loop)
           const dt = clock.getDelta()
           animRef.current?.update(dt)
+          mediaPanelRef.current?.update()
           frames++
           const now = performance.now()
           if (now - fpsClock >= 1000) {
@@ -215,6 +230,8 @@ export default function Viewer() {
           cancelAnimationFrame(raf)
           animRef.current?.dispose()
           animRef.current = null
+          mediaPanelRef.current?.dispose()
+          mediaPanelRef.current = null
           stream.getTracks().forEach((t) => t.stop())
           renderer.dispose()
           scene.traverse((o) => {
