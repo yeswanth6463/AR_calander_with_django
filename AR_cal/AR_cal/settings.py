@@ -23,7 +23,11 @@ DEBUG = config("DEBUG", default=False, cast=bool)
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*", cast=Csv())
 
-CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="", cast=Csv())
+CSRF_TRUSTED_ORIGINS = config(
+    "CSRF_TRUSTED_ORIGINS",
+    default="http://localhost:5173,http://127.0.0.1:5173",
+    cast=Csv(),
+)
 
 # Application definition
 
@@ -79,9 +83,9 @@ DATABASES = {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": config("POSTGRES_DB", default="ar_platform"),
         "USER": config("POSTGRES_USER", default="postgres"),
-        "PASSWORD": config("POSTGRES_PASSWORD", default="postgres"),
+        "PASSWORD": config("2802", default="2802"),
         "HOST": config("POSTGRES_HOST", default="localhost"),
-        "PORT": config("POSTGRES_PORT", default="5432"),
+        "PORT": config("POSTGRES_PORT", default="5433"),
         "CONN_MAX_AGE": 60,
     }
 }

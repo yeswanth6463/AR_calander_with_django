@@ -94,6 +94,9 @@ class ModelAsset(models.Model):
     FORMAT_CHOICES = [
         ("glb", "GLB"),
         ("gltf", "GLTF"),
+        ("mp4", "MP4 video"),
+        ("webm", "WebM video"),
+        ("gif", "GIF"),
     ]
 
     id = models.UUIDField(
@@ -154,6 +157,9 @@ class ARExperience(models.Model):
     rotation_y = models.FloatField(default=0.0)
     rotation_z = models.FloatField(default=0.0)
     scale = models.FloatField(default=1.0)
+    scale_x = models.FloatField(default=1.0)
+    scale_y = models.FloatField(default=1.0)
+    scale_z = models.FloatField(default=1.0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -172,8 +178,8 @@ class ARExperience(models.Model):
                     "3D model must belong to the same project."
                 )
 
-        if self.scale <= 0:
-            raise ValidationError("Scale must be greater than zero.")
+        if min(self.scale_x, self.scale_y, self.scale_z) <= 0:
+            raise ValidationError("Scale values must be greater than zero.")
 
     def __str__(self):
         return f"AR Experience - {self.project.name}"

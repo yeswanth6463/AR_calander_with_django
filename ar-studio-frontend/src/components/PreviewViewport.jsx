@@ -74,10 +74,23 @@ export default function PreviewViewport({
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85)
+    scene.add(ambientLight)
+    const key = new THREE.DirectionalLight(0xffffff, 1.25)
+    key.position.set(2, 4, 2)
+    scene.add(key)
+    const fill = new THREE.DirectionalLight(0x88aaff, 0.4)
+    fill.position.set(-2, 1, -2)
+    scene.add(fill)
+
     const isLight = () => document.documentElement.dataset.theme === 'light'
     const applyTheme = () => {
-      scene.background = new THREE.Color(isLight() ? 0xe9edf5 : 0x0e1119)
-      scene.fog = new THREE.Fog(scene.background, 4, 12)
+      const light = isLight()
+      scene.background = new THREE.Color(light ? 0xf5f7fb : 0x0e1119)
+      scene.fog = new THREE.Fog(scene.background, 5, 15)
+      ambientLight.intensity = light ? 1.05 : 0.75
+      key.intensity = light ? 1.35 : 1.2
+      fill.intensity = light ? 0.55 : 0.4
     }
     applyTheme()
 
@@ -280,14 +293,6 @@ export default function PreviewViewport({
       orbitControls: controls,
     })
     rectGizmoRef.current = rectGizmo
-
-    scene.add(new THREE.AmbientLight(0xffffff, 0.75))
-    const key = new THREE.DirectionalLight(0xffffff, 1.2)
-    key.position.set(2, 4, 2)
-    scene.add(key)
-    const fill = new THREE.DirectionalLight(0x88aaff, 0.4)
-    fill.position.set(-2, 1, -2)
-    scene.add(fill)
 
     const grid = new THREE.GridHelper(8, 32, 0x2a3145, 0x1a1f2e)
     const gridLight = new THREE.GridHelper(8, 32, 0xaab4c8, 0xd3d9e5)
