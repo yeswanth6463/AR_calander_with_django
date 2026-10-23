@@ -223,6 +223,7 @@ def public_experience(request, public_id):
                 "position": [exp.position_x, exp.position_y, exp.position_z],
                 "rotation": [exp.rotation_x, exp.rotation_y, exp.rotation_z],
                 "scale": exp.scale,
+                "scale_xyz": [exp.scale_x, exp.scale_y, exp.scale_z],
             },
         }
     )
