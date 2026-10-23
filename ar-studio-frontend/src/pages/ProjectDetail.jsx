@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
+import AnimationPanel from '../components/AnimationPanel'
 import PreviewViewport from '../components/PreviewViewport'
 
 const rel = (url) => {
@@ -17,6 +18,8 @@ export default function ProjectDetail() {
   const [targets, setTargets] = useState([])
   const [assets, setAssets] = useState([])
   const [experiences, setExperiences] = useState([])
+  const [animationController, setAnimationController] = useState(null)
+  const [animationExpanded, setAnimationExpanded] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [selectedId, setSelectedId] = useState(null)
@@ -55,9 +58,41 @@ export default function ProjectDetail() {
     ? {
         position: [selected.position_x, selected.position_y, selected.position_z],
         rotation: [selected.rotation_x, selected.rotation_y, selected.rotation_z],
-        scale: selected.scale,
+        scale: [selected.scale_x, selected.scale_y, selected.scale_z],
       }
     : null
+
+  const updateTransform = useCallback(
+    (values, commit) => {
+      setExperiences((current) =>
+        current.map((experience) =>
+          experience.id === selectedId ? { ...experience, ...values } : experience
+        )
+      )
+      if (!commit || !selectedId) return
+
+      api(`/experiences/${selectedId}/`, { method: 'PATCH', body: values })
+        .then(() => setNotice('Transform saved.'))
+        .catch((err) => setError(err.message))
+    },
+    [selectedId]
+  )
+
+  const resetModelTransform = useCallback(() => {
+    const defaultTransform = {
+      position_x: 0,
+      position_y: 0,
+      position_z: 0,
+      rotation_x: 0,
+      rotation_y: 0,
+      rotation_z: 0,
+      scale_x: 1,
+      scale_y: 1,
+      scale_z: 1,
+      scale: 1,
+    }
+    updateTransform(defaultTransform, true)
+  }, [updateTransform])
 
   if (error && !project) return <div className="error-box">{error}</div>
   if (!project) return <p className="muted center">Loading…</p>
@@ -91,6 +126,24 @@ export default function ProjectDetail() {
             onNotice={setNotice}
             selectedId={selected?.model_asset}
           />
+          {animationController && (
+            <div className="panel-section animation-section">
+              <button
+                className="panel-toggle"
+                aria-expanded={animationExpanded}
+                onClick={() => setAnimationExpanded((open) => !open)}
+              >
+                <h2>Animation</h2>
+                <span aria-hidden="true">{animationExpanded ? '▾' : '▸'}</span>
+              </button>
+              {animationExpanded && (
+                <AnimationPanel
+                  controller={animationController}
+                  className="sidebar-animation"
+                />
+              )}
+            </div>
+          )}
         </aside>
 
         <section className="panel viewport-panel">
@@ -98,6 +151,8 @@ export default function ProjectDetail() {
             target={previewTarget}
             asset={previewAsset}
             transform={previewTransform}
+            onAnimationController={setAnimationController}
+            onTransformChange={updateTransform}
           />
           <div className="viewport-hint">
             {selected
@@ -117,6 +172,8 @@ export default function ProjectDetail() {
             reload={load}
             onError={setError}
             onNotice={setNotice}
+            onTransformChange={updateTransform}
+            onResetTransform={resetModelTransform}
           />
         </aside>
       </div>
@@ -126,6 +183,7 @@ export default function ProjectDetail() {
 
 function TargetsPanel({ projectId, targets, reload, onError, onNotice, selectedId }) {
   const [busy, setBusy] = useState(false)
+  const [expanded, setExpanded] = useState(true)
 
   const upload = async (e) => {
     const files = Array.from(e.target.files || [])
@@ -171,40 +229,52 @@ function TargetsPanel({ projectId, targets, reload, onError, onNotice, selectedI
   return (
     <div className="panel-section">
       <div className="panel-head">
-        <h2>Targets</h2>
+        <button
+          className="panel-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          <h2>Targets</h2>
+          <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+        </button>
         <label className={`btn small ${busy ? 'ghost' : ''}`}>
           {busy ? '…' : '+ Upload'}
           <input type="file" accept="image/*" multiple hidden onChange={upload} disabled={busy} />
         </label>
       </div>
-      {targets.length === 0 && (
-        <p className="muted small-text">Drop detailed, high-contrast images. Multiple files supported.</p>
-      )}
-      <div className="asset-list">
-        {targets.map((t) => (
-          <div key={t.id} className={`asset-item ${selectedId === t.id ? 'active' : ''}`}>
-            {t.image && <img className="thumb" src={rel(t.image)} alt="" />}
-            <div className="grow">
-              <div className="name">{t.name}</div>
-              <div className="muted tiny">
-                {t.target_width} m · {t.tracking_data ? '✓ features' : 'needs register'}
+      {expanded && (
+        <>
+          {targets.length === 0 && (
+            <p className="muted small-text">Drop detailed, high-contrast images. Multiple files supported.</p>
+          )}
+          <div className="asset-list">
+            {targets.map((t) => (
+              <div key={t.id} className={`asset-item ${selectedId === t.id ? 'active' : ''}`}>
+                {t.image && <img className="thumb" src={rel(t.image)} alt="" />}
+                <div className="grow">
+                  <div className="name">{t.name}</div>
+                  <div className="muted tiny">
+                    {t.target_width} m · {t.tracking_data ? '✓ features' : 'needs register'}
+                  </div>
+                </div>
+                <div className="item-actions">
+                  {!t.tracking_data && (
+                    <button className="btn small" onClick={() => register(t.id)}>Register</button>
+                  )}
+                  <button className="btn ghost small" onClick={() => remove(t.id)}>✕</button>
+                </div>
               </div>
-            </div>
-            <div className="item-actions">
-              {!t.tracking_data && (
-                <button className="btn small" onClick={() => register(t.id)}>Register</button>
-              )}
-              <button className="btn ghost small" onClick={() => remove(t.id)}>✕</button>
-            </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
     </div>
   )
 }
 
 function AssetsPanel({ projectId, assets, reload, onError, onNotice, selectedId }) {
   const [busy, setBusy] = useState(false)
+  const [expanded, setExpanded] = useState(true)
 
   const upload = async (e) => {
     const files = Array.from(e.target.files || [])
@@ -214,8 +284,8 @@ function AssetsPanel({ projectId, assets, reload, onError, onNotice, selectedId 
     try {
       for (const file of files) {
         const ext = file.name.split('.').pop().toLowerCase()
-        if (!['glb', 'gltf'].includes(ext)) {
-          throw new Error(`${file.name}: only .glb / .gltf are supported`)
+        if (!['glb', 'gltf', 'mp4', 'webm', 'gif'].includes(ext)) {
+          throw new Error(`${file.name}: use .glb, .gltf, .mp4, .webm, or .gif`)
         }
         const fd = new FormData()
         fd.append('project', projectId)
@@ -224,7 +294,7 @@ function AssetsPanel({ projectId, assets, reload, onError, onNotice, selectedId 
         fd.append('format', ext)
         await api('/assets/', { method: 'POST', formData: fd })
       }
-      onNotice(`Uploaded ${files.length} model${files.length > 1 ? 's' : ''}.`)
+      onNotice(`Uploaded ${files.length} asset${files.length > 1 ? 's' : ''}.`)
       e.target.value = ''
       await reload()
     } catch (err) {
@@ -235,7 +305,7 @@ function AssetsPanel({ projectId, assets, reload, onError, onNotice, selectedId 
   }
 
   const remove = async (assetId) => {
-    if (!confirm('Delete this model?')) return
+    if (!confirm('Delete this asset?')) return
     await api(`/assets/${assetId}/`, { method: 'DELETE' })
     await reload()
   }
@@ -243,27 +313,40 @@ function AssetsPanel({ projectId, assets, reload, onError, onNotice, selectedId 
   return (
     <div className="panel-section">
       <div className="panel-head">
-        <h2>Models</h2>
+        <button
+          className="panel-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          <h2>Models &amp; Media</h2>
+          <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+        </button>
         <label className={`btn small ${busy ? 'ghost' : ''}`}>
           {busy ? '…' : '+ Upload'}
-          <input type="file" accept=".glb,.gltf" multiple hidden onChange={upload} disabled={busy} />
+          <input type="file" accept=".glb,.gltf,.mp4,.webm,.gif" multiple hidden onChange={upload} disabled={busy} />
         </label>
       </div>
-      {assets.length === 0 && <p className="muted small-text">Upload .glb files. Multiple supported.</p>}
-      <div className="asset-list">
-        {assets.map((a) => (
-          <div key={a.id} className={`asset-item ${selectedId === a.id ? 'active' : ''}`}>
-            <div className="cube-icon">◆</div>
-            <div className="grow">
-              <div className="name">{a.name}</div>
-              <div className="muted tiny">{a.format.toUpperCase()}</div>
-            </div>
-            <div className="item-actions">
-              <button className="btn ghost small" onClick={() => remove(a.id)}>✕</button>
-            </div>
+      {expanded && (
+        <>
+          {assets.length === 0 && (
+            <p className="muted small-text">Upload 3D models (.glb/.gltf) or animated media (.mp4/.webm/.gif).</p>
+          )}
+          <div className="asset-list">
+            {assets.map((a) => (
+              <div key={a.id} className={`asset-item ${selectedId === a.id ? 'active' : ''}`}>
+                <div className="cube-icon">{['mp4', 'webm', 'gif'].includes(a.format) ? '▶' : '◆'}</div>
+                <div className="grow">
+                  <div className="name">{a.name}</div>
+                  <div className="muted tiny">{a.format.toUpperCase()}</div>
+                </div>
+                <div className="item-actions">
+                  <button className="btn ghost small" onClick={() => remove(a.id)}>✕</button>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
     </div>
   )
 }
@@ -278,28 +361,19 @@ function InspectorPanel({
   reload,
   onError,
   onNotice,
+  onTransformChange,
+  onResetTransform,
 }) {
   const [targetId, setTargetId] = useState('')
   const [assetId, setAssetId] = useState('')
   const [expName, setExpName] = useState('')
   const [busy, setBusy] = useState(false)
-  const [form, setForm] = useState(null)
   const [slug, setSlug] = useState('')
 
   useEffect(() => {
     if (selected) {
-      setForm({
-        position_x: selected.position_x,
-        position_y: selected.position_y,
-        position_z: selected.position_z,
-        rotation_x: selected.rotation_x,
-        rotation_y: selected.rotation_y,
-        rotation_z: selected.rotation_z,
-        scale: selected.scale,
-      })
       setSlug(selected.published_slug || '')
     } else {
-      setForm(null)
       setSlug('')
     }
   }, [selected])
@@ -324,20 +398,6 @@ function InspectorPanel({
       setExpName('')
       await reload()
       onSelect(d.id)
-    } catch (err) {
-      onError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const saveTransform = async () => {
-    if (!selected || !form) return
-    setBusy(true)
-    try {
-      await api(`/experiences/${selected.id}/`, { method: 'PATCH', body: form })
-      onNotice('Transform saved.')
-      await reload()
     } catch (err) {
       onError(err.message)
     } finally {
@@ -391,7 +451,7 @@ function InspectorPanel({
             ))}
           </select>
           <select required value={assetId} onChange={(e) => setAssetId(e.target.value)}>
-            <option value="">choose model…</option>
+            <option value="">choose model or media…</option>
             {assets.map((a) => (
               <option key={a.id} value={a.id}>{a.name}</option>
             ))}
@@ -427,20 +487,60 @@ function InspectorPanel({
         </div>
       </div>
 
-      {selected && form && (
-        <div className="panel-section">
-          <div className="panel-head"><h2>Transform</h2></div>
-          <Slider label="Pos X" v={form.position_x} min={-0.5} max={0.5} step={0.01} onChange={(v) => setForm({ ...form, position_x: v })} />
-          <Slider label="Pos Y" v={form.position_y} min={-0.5} max={0.5} step={0.01} onChange={(v) => setForm({ ...form, position_y: v })} />
-          <Slider label="Pos Z" v={form.position_z} min={-0.2} max={1} step={0.01} onChange={(v) => setForm({ ...form, position_z: v })} />
-          <Slider label="Rot X" v={form.rotation_x} min={0} max={360} step={1} onChange={(v) => setForm({ ...form, rotation_x: v })} />
-          <Slider label="Rot Y" v={form.rotation_y} min={0} max={360} step={1} onChange={(v) => setForm({ ...form, rotation_y: v })} />
-          <Slider label="Rot Z" v={form.rotation_z} min={0} max={360} step={1} onChange={(v) => setForm({ ...form, rotation_z: v })} />
-          <Slider label="Scale" v={form.scale} min={0.1} max={3} step={0.05} onChange={(v) => setForm({ ...form, scale: v })} />
-          <div className="row">
-            <button className="btn small" onClick={saveTransform} disabled={busy}>Save</button>
-            <button className="btn danger small" onClick={remove} disabled={busy}>Delete</button>
+      {selected && (
+        <div className="panel-section transform-section">
+          <div className="panel-head">
+            <h2>Transform</h2>
+            <button
+              type="button"
+              className="btn-reset-transform"
+              onClick={onResetTransform}
+              title="Reset position to 0, rotation to 0, scale to 1"
+            >
+              ↺ Reset
+            </button>
           </div>
+          <div className="transform-axis-head">
+            <span />
+            <span>X</span>
+            <span>Y</span>
+            <span>Z</span>
+          </div>
+          <TransformRow
+            label="Position"
+            fields={[
+              ['position_x', selected.position_x],
+              ['position_y', selected.position_y],
+              ['position_z', selected.position_z],
+            ]}
+            onChange={onTransformChange}
+          />
+          <TransformRow
+            label="Rotation"
+            fields={[
+              ['rotation_x', selected.rotation_x],
+              ['rotation_y', selected.rotation_y],
+              ['rotation_z', selected.rotation_z],
+            ]}
+            onChange={onTransformChange}
+          />
+          <TransformRow
+            label="Scale"
+            fields={[
+              ['scale_x', selected.scale_x],
+              ['scale_y', selected.scale_y],
+              ['scale_z', selected.scale_z],
+            ]}
+            onChange={onTransformChange}
+          />
+          <button
+            type="button"
+            className="reset-model-btn"
+            onClick={onResetTransform}
+            title="Reset all model transform properties (position, rotation, scale)"
+          >
+            <span>↺</span> Reset Model Transform
+          </button>
         </div>
       )}
 
@@ -454,9 +554,14 @@ function InspectorPanel({
               value={slug}
               onChange={(e) => setSlug(e.target.value)}
             />
-            <button className="btn small" onClick={publish} disabled={busy}>
-              {selected.status === 'published' ? 'Republish' : 'Publish'}
-            </button>
+            <div className="row">
+              <button className="btn small" onClick={publish} disabled={busy}>
+                {selected.status === 'published' ? 'Republish' : 'Publish'}
+              </button>
+              <button className="btn danger small" onClick={remove} disabled={busy}>
+                Delete experience
+              </button>
+            </div>
             {link && (
               <div className="publish-link">
                 <input readOnly value={link} onFocus={(e) => e.target.select()} />
@@ -473,12 +578,33 @@ function InspectorPanel({
   )
 }
 
-function Slider({ label, v, min, max, step, onChange }) {
+function TransformRow({ label, fields, onChange }) {
   return (
-    <div className="slider-row">
+    <div className="transform-axis-row">
       <span>{label}</span>
-      <input type="range" min={min} max={max} step={step} value={v} onChange={(e) => onChange(Number(e.target.value))} />
-      <input type="number" min={min} max={max} step={step} value={v} onChange={(e) => onChange(Number(e.target.value))} />
+      {fields.map(([field, value], index) => (
+        <input
+          key={`${field}-${index}`}
+          type="number"
+          step={field.startsWith('rotation_') ? 1 : 0.01}
+          min={field === 'scale' ? 0.01 : undefined}
+          value={Number(value.toFixed(3))}
+          aria-label={`${label} ${'XYZ'[index]}`}
+          onChange={(event) => {
+            if (event.target.value === '') return
+            const nextValue = Number(event.target.value)
+            if (Number.isFinite(nextValue) && (field !== 'scale' || nextValue > 0)) {
+              onChange({ [field]: nextValue }, false)
+            }
+          }}
+          onBlur={(event) => {
+            const nextValue = Number(event.target.value)
+            if (Number.isFinite(nextValue) && (field !== 'scale' || nextValue > 0)) {
+              onChange({ [field]: nextValue }, true)
+            }
+          }}
+        />
+      ))}
     </div>
   )
 }
