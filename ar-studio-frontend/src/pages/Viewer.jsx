@@ -67,6 +67,34 @@ const loadImage = (src) =>
     img.src = src
   })
 
+// Exact 4-point homography from target corners → (smoothed) frame corners, so
+// the pose actually benefits from corner smoothing instead of raw H jitter.
+const poseFromCorners = (targetW, targetH, corners, frameW, frameH, fovDeg) => {
+  const tw = Math.max(targetW - 1, 1)
+  const th = Math.max(targetH - 1, 1)
+  const src = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th])
+  const dst = cv.matFromArray(
+    4,
+    1,
+    cv.CV_32FC2,
+    [corners[0][0], corners[0][1], corners[1][0], corners[1][1],
+     corners[2][0], corners[2][1], corners[3][0], corners[3][1]]
+  )
+  const H = cv.findHomography(src, dst, 0)
+  src.delete()
+  dst.delete()
+  if (!H) return null
+  const f = H.data64F
+  const m = poseFromHomography(
+    [f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8]],
+    frameW,
+    frameH,
+    fovDeg
+  )
+  H.delete()
+  return m
+}
+
 export default function Viewer() {
   const { publicId } = useParams()
   const videoRef = useRef(null)
@@ -127,6 +155,29 @@ export default function Viewer() {
         dir.position.set(1, 2, 3)
         scene.add(dir)
 
+        // Orientation / video-size changes: keep drawing-buffer aspect in sync
+        // with the camera feed so the pose matrix matches the frame.
+        const trackSmooth = { corners: null }
+        const syncVideoSize = () => {
+          const vw = video.videoWidth
+          const vh = video.videoHeight
+          if (!vw || !vh) return
+          if (glCanvas.width !== vw || glCanvas.height !== vh) {
+            glCanvas.width = vw
+            glCanvas.height = vh
+            renderer.setSize(vw, vh, false)
+            // Old smoothed corners are in pre-rotation frame coords — drop them.
+            trackSmooth.corners = null
+          }
+          camera.aspect = vw / vh
+          camera.updateProjectionMatrix()
+        }
+        // `resize` fires on the video element when videoWidth/Height change
+        // (e.g. orientation change); loadedmetadata has already fired by now.
+        video.addEventListener('resize', syncVideoSize)
+        window.addEventListener('resize', syncVideoSize)
+        syncVideoSize()
+
         const anchor = new THREE.Object3D()
         anchor.matrixAutoUpdate = false
         anchor.visible = false
@@ -186,14 +237,11 @@ export default function Viewer() {
           })
         }
 
-        let smoothed = null
         let lastFound = 0
         let frames = 0
         let fpsClock = performance.now()
         let raf = 0
         const clock = new THREE.Clock()
-        const trackerRef = { current: null }
-        trackerRef.current = tracker
 
         const loop = () => {
           raf = requestAnimationFrame(loop)
@@ -208,17 +256,26 @@ export default function Viewer() {
             fpsClock = now
           }
 
-          const r = trackerRef.current.track(video)
+          const r = tracker.track(video)
           if (r.found) {
-            smoothed = smoothCorners(smoothed, r.corners, 0.4)
-            const m = poseFromHomography(r.H, glCanvas.width, glCanvas.height, 60)
-            anchor.matrix.fromArray(m)
-            anchor.matrixWorldNeedsUpdate = true
-            anchor.visible = true
-            lastFound = now
-            setTrackState('found')
+            trackSmooth.corners = smoothCorners(trackSmooth.corners, r.corners, 0.4)
+            const m = poseFromCorners(
+              tracker.targetW,
+              tracker.targetH,
+              trackSmooth.corners,
+              glCanvas.width,
+              glCanvas.height,
+              60
+            )
+            if (m) {
+              anchor.matrix.fromArray(m)
+              anchor.matrixWorldNeedsUpdate = true
+              anchor.visible = true
+              lastFound = now
+              setTrackState('found')
+            }
           } else if (now - lastFound > 300) {
-            smoothed = null
+            trackSmooth.corners = null
             anchor.visible = false
             setTrackState(`lost (${r.reason})`)
           }
@@ -232,6 +289,8 @@ export default function Viewer() {
           animRef.current = null
           mediaPanelRef.current?.dispose()
           mediaPanelRef.current = null
+          video.removeEventListener('resize', syncVideoSize)
+          window.removeEventListener('resize', syncVideoSize)
           stream.getTracks().forEach((t) => t.stop())
           renderer.dispose()
           scene.traverse((o) => {
