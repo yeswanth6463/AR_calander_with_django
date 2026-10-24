@@ -1,16 +1,13 @@
 import { useEffect, useState } from 'react'
 import { FRAME_RATE } from '../ar/animation'
 
-const LOOP_ICON = { repeat: '↻', once: '1', pingpong: '⇄' }
-const LOOP_ORDER = ['repeat', 'once', 'pingpong']
-
 const fmt = (t) => (Number.isFinite(t) ? t.toFixed(2) : '0.00')
 
 export default function AnimationPanel({ controller, className = '' }) {
   const [st, setSt] = useState(() => controller.getState())
-  const [open, setOpen] = useState(true)
-  // Re-sync when a new controller arrives (model rebuilt) — render-phase state
-  // adjustment avoids a stale snapshot until the next playback tick.
+  const [timelineOpen, setTimelineOpen] = useState(true)
+
+  // Re-sync when a new controller arrives (model rebuilt)
   const [prevCtl, setPrevCtl] = useState(controller)
   if (prevCtl !== controller) {
     setPrevCtl(controller)
@@ -19,8 +16,13 @@ export default function AnimationPanel({ controller, className = '' }) {
 
   useEffect(() => controller.subscribe(setSt), [controller])
 
-  if (!st.clips.length) return null
+  if (!st?.clips?.length) return null
 
+  const activeIndices = Array.isArray(st.activeIndices)
+    ? st.activeIndices
+    : [st.index ?? 0]
+
+  const isLooping = st.loop === 'repeat'
   const duration = st.duration || 0
   const totalFrames = Math.max(1, Math.round(duration * FRAME_RATE))
   const frame = Math.min(totalFrames, Math.floor(st.time * FRAME_RATE) + 1)
@@ -30,61 +32,146 @@ export default function AnimationPanel({ controller, className = '' }) {
   if (!speeds.includes(st.speed)) speeds.push(st.speed)
   speeds.sort((a, b) => a - b)
 
-  const cycleLoop = () => {
-    const next = LOOP_ORDER[(LOOP_ORDER.indexOf(st.loop) + 1) % LOOP_ORDER.length]
-    controller.setLoop(next)
+  const handleToggleLoop = () => {
+    if (controller.toggleLoop) {
+      controller.toggleLoop()
+    } else {
+      controller.setLoop(isLooping ? 'once' : 'repeat')
+    }
   }
 
   return (
     <div className={`anim-panel ${className}`}>
-      <div className="anim-row">
+      {/* Animation Clips List with Checkboxes */}
+      <div className="anim-clips-container">
+        <div className="anim-clips-header">
+          <span className="anim-clips-title">
+            Clips ({st.clips.length})
+          </span>
+          <div className="anim-clips-actions">
+            <button
+              type="button"
+              className="anim-btn-text"
+              onClick={() => controller.selectAll?.()}
+              title="Select all animation clips"
+            >
+              All
+            </button>
+            <span className="anim-sep">·</span>
+            <button
+              type="button"
+              className="anim-btn-text"
+              onClick={() => controller.deselectAll?.()}
+              title="Deselect all animation clips"
+            >
+              None
+            </button>
+          </div>
+        </div>
+
+        <div className="anim-clips-list" role="list" aria-label="Animation clips">
+          {st.clips.map((c, i) => {
+            const isChecked = activeIndices.includes(i)
+            return (
+              <label
+                key={`${c.name}-${i}`}
+                className={`anim-clip-item ${isChecked ? 'active' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  className="anim-checkbox"
+                  checked={isChecked}
+                  onChange={() => controller.toggleClip?.(i)}
+                />
+                <span className="anim-clip-name" title={c.name}>
+                  {c.name}
+                </span>
+                <span className="anim-clip-dur">
+                  {fmt(c.duration)}s
+                </span>
+              </label>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Playback Transport Row 1: Core Controls */}
+      <div className="anim-row anim-controls-row">
         <button
-          className="anim-collapse"
-          onClick={() => setOpen((o) => !o)}
-          title={open ? 'Hide timeline' : 'Show timeline'}
+          type="button"
+          onClick={() => controller.seek(0)}
+          title="Jump to start"
         >
-          {open ? '▾' : '▴'}
-        </button>
-        {st.clips.length > 1 && (
-          <select
-            className="anim-clip"
-            value={st.index}
-            onChange={(e) => controller.selectClip(Number(e.target.value))}
-            title="Animation clip"
-          >
-            {st.clips.map((c, i) => (
-              <option key={`${c.name}-${i}`} value={i}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        )}
-        <button onClick={() => controller.seek(0)} title="Jump to start">
           ⏮
         </button>
-        <button onClick={() => step(-1)} title="Previous frame">
+        <button
+          type="button"
+          onClick={() => step(-1)}
+          title="Previous frame"
+        >
           ‹
         </button>
         <button
+          type="button"
           className="anim-primary"
           onClick={() => controller.toggle()}
           title={st.playing ? 'Pause' : 'Play'}
         >
           {st.playing ? '⏸' : '▶'}
         </button>
-        <button onClick={() => step(1)} title="Next frame">
+        <button
+          type="button"
+          onClick={() => step(1)}
+          title="Next frame"
+        >
           ›
         </button>
-        <button onClick={() => controller.seek(duration)} title="Jump to end">
+        <button
+          type="button"
+          onClick={() => controller.seek(duration)}
+          title="Jump to end"
+        >
           ⏭
         </button>
-        <button onClick={() => controller.stop()} title="Stop and rewind">
+        <button
+          type="button"
+          onClick={() => controller.stop()}
+          title="Stop and rewind"
+        >
           ■
         </button>
-        <button onClick={cycleLoop} title={`Loop mode: ${st.loop}`}>
-          {LOOP_ICON[st.loop]}
+      </div>
+
+      {/* Playback Transport Row 2: Loop Toggle, Speed, and Timeline Toggle */}
+      <div className="anim-row anim-options-row">
+        {/* Dedicated Loop Button */}
+        <button
+          type="button"
+          className={`anim-loop-btn ${isLooping ? 'active' : ''}`}
+          onClick={handleToggleLoop}
+          title={isLooping ? 'Loop: ON (continuous) — Click to play once' : 'Loop: OFF (plays once) — Click to loop'}
+          aria-pressed={isLooping}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="15"
+            height="15"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="17 1 21 5 17 9" />
+            <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+            <polyline points="7 23 3 19 7 15" />
+            <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+          </svg>
+          <span>{isLooping ? 'Loop ON' : 'Loop OFF'}</span>
         </button>
+
         <select
+          className="anim-speed-select"
           value={st.speed}
           onChange={(e) => controller.setSpeed(Number(e.target.value))}
           title="Playback speed"
@@ -95,15 +182,26 @@ export default function AnimationPanel({ controller, className = '' }) {
             </option>
           ))}
         </select>
+
+        <button
+          type="button"
+          className="anim-collapse"
+          onClick={() => setTimelineOpen((o) => !o)}
+          title={timelineOpen ? 'Hide timeline slider' : 'Show timeline slider'}
+        >
+          {timelineOpen ? '▾ Timeline' : '▴ Timeline'}
+        </button>
       </div>
-      {open && (
+
+      {/* Timeline Slider and Frame Readout */}
+      {timelineOpen && (
         <div className="anim-row anim-timeline">
           <input
             type="range"
             min={0}
-            max={duration}
+            max={duration || 1}
             step={0.001}
-            value={Math.min(st.time, duration)}
+            value={Math.min(st.time, duration || 1)}
             onChange={(e) => controller.seek(Number(e.target.value))}
             aria-label="Timeline"
           />
