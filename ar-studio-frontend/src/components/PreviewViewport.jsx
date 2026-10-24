@@ -733,6 +733,7 @@ export default function PreviewViewport({
             modelGroup.add(panel.mesh)
             mediaPanelRef.current = panel
             transformControlsRef.current?.attach(modelGroup)
+            rectGizmoRef.current?.invalidateBounds?.()
             setModelReady(true)
             setModelState('')
           })
@@ -758,6 +759,7 @@ export default function PreviewViewport({
           model.position.set(-c.x, -box2.min.y, -c.z)
           modelGroup.add(model)
           transformControlsRef.current?.attach(modelGroup)
+          rectGizmoRef.current?.invalidateBounds?.()
           if (gltf.animations?.length) {
             const ctl = createAnimationController(gltf)
             ctl.play()
@@ -783,6 +785,7 @@ export default function PreviewViewport({
 
   // Live transform
   useEffect(() => {
+    if (rectGizmoRef.current?.isDragging?.()) return
     const g = modelGroupRef.current
     if (!g || !transform) return
     const [px, py, pz] = transform.position
