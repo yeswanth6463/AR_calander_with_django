@@ -271,6 +271,212 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
   white-space: nowrap;
 }
 
+/* ---------- Animation Clips List with Checkbox ---------- */
+
+.anim-clips-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.anim-clips-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+}
+
+.anim-clips-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.anim-panel button.anim-btn-text {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  height: auto;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+  border-radius: 2px;
+  text-transform: none;
+}
+
+.anim-panel button.anim-btn-text:hover {
+  text-decoration: underline;
+  border-color: transparent;
+}
+
+.anim-sep {
+  color: var(--muted);
+  opacity: 0.4;
+  font-size: 11px;
+}
+
+.anim-clips-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 175px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.anim-clips-list::-webkit-scrollbar {
+  width: 5px;
+}
+.anim-clips-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.anim-clip-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  user-select: none;
+}
+
+.anim-clip-item:hover {
+  background: rgba(59, 110, 245, 0.08);
+  border-color: rgba(59, 110, 245, 0.35);
+}
+
+.anim-clip-item.active {
+  background: rgba(59, 110, 245, 0.12);
+  border-color: var(--accent);
+}
+
+.anim-clip-item input[type='checkbox'].anim-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.anim-clip-name {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.anim-clip-dur {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+}
+
+.sidebar-animation .anim-controls-row button {
+  height: 32px;
+  min-width: 32px;
+  font-size: 13px;
+  padding: 0 6px;
+}
+
+.sidebar-animation .anim-controls-row button.anim-primary {
+  width: 44px;
+}
+
+.sidebar-animation .anim-controls-row select {
+  height: 32px;
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.anim-options-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 2px;
+}
+
+.anim-panel button.anim-loop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  height: 32px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.anim-panel button.anim-loop-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 10px rgba(59, 110, 245, 0.35);
+}
+
+.anim-panel button.anim-loop-btn:not(.active) {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.anim-panel button.anim-loop-btn:not(.active):hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.anim-panel select.anim-speed-select {
+  height: 32px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.anim-panel button.anim-collapse {
+  height: 32px;
+  padding: 0 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.anim-panel button.anim-collapse:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+
 /* ---------- Game-engine studio layout ---------- */
 
 .content:has(.studio) {
