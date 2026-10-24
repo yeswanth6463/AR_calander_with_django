@@ -69,7 +69,7 @@ export default function UnityGizmoToolbar({
       hotkey: 'Q',
       description: 'Pan & orbit view without gizmo',
       icon: (
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
           <path d="M10 1.8a1.2 1.2 0 0 0-1.2 1.2v7.1L7.5 9a1.2 1.2 0 0 0-1.7.2 1.2 1.2 0 0 0 .2 1.7l4.4 4.5c.9.9 1.5 2.1 1.7 3.4H17a3.8 3.8 0 0 0 3.8-3.8V6.8a1.2 1.2 0 0 0-1.2-1.3 1.2 1.2 0 0 0-1.3 1.3v2.2h-.5V3.8a1.2 1.2 0 0 0-1.3-1.3 1.2 1.2 0 0 0-1.2 1.3v4.5h-.5V2a1.2 1.2 0 0 0-1.3-1.2A1.2 1.2 0 0 0 13.2 2v7h-.5V3a1.2 1.2 0 0 0-1.2-1.2H10z" />
         </svg>
       ),
@@ -80,36 +80,13 @@ export default function UnityGizmoToolbar({
       hotkey: 'W',
       description: 'Translate object with 3 arrows (XYZ)',
       icon: (
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
           <rect x="11" y="5" width="2" height="14" />
           <rect x="5" y="11" width="14" height="2" />
           <polygon points="12,1 8,6 16,6" />
           <polygon points="12,23 8,18 16,18" />
           <polygon points="1,12 6,8 6,16" />
           <polygon points="23,12 18,8 18,16" />
-        </svg>
-      ),
-    },
-    {
-      id: 'rotate',
-      label: 'Rotate Tool',
-      hotkey: 'E',
-      description: 'Rotate object around axes',
-      icon: (
-        <svg
-          viewBox="0 0 24 24"
-          width="18"
-          height="18"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M21 12a9 9 0 0 0-9-9 9 9 0 0 0-6.4 2.6L3 8" />
-          <polyline points="3 3 3 8 8 8" />
-          <path d="M3 12a9 9 0 0 0 9 9 9 9 0 0 0 6.4-2.6L21 16" />
-          <polyline points="21 21 21 16 16 16" />
         </svg>
       ),
     },
@@ -121,8 +98,8 @@ export default function UnityGizmoToolbar({
       icon: (
         <svg
           viewBox="0 0 24 24"
-          width="18"
-          height="18"
+          width="22"
+          height="22"
           fill="none"
           stroke="currentColor"
           strokeWidth="1.8"
@@ -137,12 +114,35 @@ export default function UnityGizmoToolbar({
       ),
     },
     {
+      id: 'rotate',
+      label: 'Rotate Tool',
+      hotkey: 'E',
+      description: 'Rotate object around axes',
+      icon: (
+        <svg
+          viewBox="0 0 24 24"
+          width="22"
+          height="22"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M21 12a9 9 0 0 0-9-9 9 9 0 0 0-6.4 2.6L3 8" />
+          <polyline points="3 3 3 8 8 8" />
+          <path d="M3 12a9 9 0 0 0 9 9 9 9 0 0 0 6.4-2.6L21 16" />
+          <polyline points="21 21 21 16 16 16" />
+        </svg>
+      ),
+    },
+    {
       id: 'rect',
       label: 'Rect Tool',
       hotkey: 'T',
       description: 'Planar transform on image target surface',
       icon: (
-        <svg viewBox="0 0 24 24" width="18" height="18">
+        <svg viewBox="0 0 24 24" width="22" height="22">
           <rect
             x="5.5"
             y="5.5"
@@ -163,12 +163,12 @@ export default function UnityGizmoToolbar({
       id: 'universal',
       label: 'Transform Tool',
       hotkey: 'Y',
-      description: 'Translate and rotate simultaneously',
+      description: 'Move, rotate & scale at once',
       icon: (
         <svg
           viewBox="0 0 24 24"
-          width="18"
-          height="18"
+          width="22"
+          height="22"
           fill="none"
           stroke="currentColor"
           strokeLinecap="round"
@@ -215,8 +215,8 @@ export default function UnityGizmoToolbar({
           <svg
             className="unity-cube-icon"
             viewBox="0 0 24 24"
-            width="17"
-            height="17"
+            width="20"
+            height="20"
             fill="none"
             stroke="currentColor"
             strokeWidth="1.6"
@@ -261,7 +261,7 @@ export default function UnityGizmoToolbar({
                 aria-label="Reset Model Transform"
                 title="Reset Model (Position 0, Rotation 0, Scale 1)"
               >
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
                   <path d="M3 3v5h5" />
                 </svg>

@@ -588,7 +588,7 @@ function TransformRow({ label, fields, onChange }) {
           type="number"
           step={field.startsWith('rotation_') ? 1 : 0.01}
           min={field === 'scale' ? 0.01 : undefined}
-          value={Number(value.toFixed(3))}
+          value={Number((Number(value) || 0).toFixed(3))}
           aria-label={`${label} ${'XYZ'[index]}`}
           onChange={(event) => {
             if (event.target.value === '') return

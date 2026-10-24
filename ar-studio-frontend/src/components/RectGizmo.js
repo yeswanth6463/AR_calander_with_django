@@ -61,7 +61,7 @@ export function createRectGizmo({
   for (let i = 0; i < 4; i++) {
     const g = new THREE.Group()
     g.name = `RectCorner_${i}`
-    const outer = new THREE.Mesh(cornerOuterGeo, outerMat.clone())
+    const outer = new THREE.Mesh(cornerOuterGeo, outerMat)
     outer.renderOrder = 10001
     const inner = new THREE.Mesh(cornerInnerGeo, innerMat)
     inner.renderOrder = 10002
@@ -76,7 +76,7 @@ export function createRectGizmo({
   for (let i = 0; i < 4; i++) {
     const g = new THREE.Group()
     g.name = `RectEdge_${i}`
-    const outer = new THREE.Mesh(edgeOuterGeo, outerMat.clone())
+    const outer = new THREE.Mesh(edgeOuterGeo, outerMat)
     outer.renderOrder = 9999
     const inner = new THREE.Mesh(edgeInnerGeo, innerMat)
     inner.renderOrder = 10000
@@ -552,7 +552,8 @@ export function createRectGizmo({
         update()
 
       } else if (dragMode === 'corner') {
-        // Corner scale: non-uniform X and Y on active plane, opposite corner stays fixed
+        // Corner scale: uniform ratio on BOTH plane axes (keeps model proportions,
+        // no stretching), opposite corner stays fixed
         const lp = lockedPlaneGeom
         const cursorDelta = hitCurrent.clone().sub(anchorWorld)
         const localDelta  = cursorDelta.applyQuaternion(invQ)
@@ -564,14 +565,14 @@ export function createRectGizmo({
         const clampedRatioH = Math.min(Math.max(ratioH, 0.02), 50)
         const clampedRatioV = Math.min(Math.max(ratioV, 0.02), 50)
 
-        const absStartH = Math.max(Math.abs(startScale[lp.hKey]), 1e-4)
-        const absStartV = Math.max(Math.abs(startScale[lp.vKey]), 1e-4)
+        // Geometric mean -> one uniform factor for the whole model
+        const uniform = Math.min(Math.max(Math.sqrt(clampedRatioH * clampedRatioV), 0.02), 50)
 
-        const newSH = Math.max(absStartH * clampedRatioH, 1e-4)
-        const newSV = Math.max(absStartV * clampedRatioV, 1e-4)
-
-        model.scale[lp.hKey] = newSH
-        model.scale[lp.vKey] = newSV
+        model.scale.set(
+          Math.max(Math.abs(startScale.x) * uniform, 1e-4),
+          Math.max(Math.abs(startScale.y) * uniform, 1e-4),
+          Math.max(Math.abs(startScale.z) * uniform, 1e-4)
+        )
 
         // Keep anchor corner fixed in world space
         const newOffset = new THREE.Vector3(
@@ -585,33 +586,28 @@ export function createRectGizmo({
         update()
 
       } else if (dragMode === 'edge') {
-        // Edge scale: scales ONLY that single edge's axis, opposite edge stays fixed
+        // Edge scale: scales the model UNIFORMLY from that edge (no stretch),
+        // opposite edge stays fixed
         const lp = lockedPlaneGeom
         const cursorDelta = hitCurrent.clone().sub(anchorWorld)
         const localDelta  = cursorDelta.applyQuaternion(invQ)
 
+        let ratio
         if (activeHandle === 0 || activeHandle === 2) {
-          // Bottom or Top edge -> scales vertical axis (e.g. Y)
-          const ratioV = localDelta[lp.vKey] / startExtentV
-          if (!Number.isFinite(ratioV)) return
-          const clampedRatioV = Math.min(Math.max(ratioV, 0.02), 50)
-          const absStartV = Math.max(Math.abs(startScale[lp.vKey]), 1e-4)
-          const newSV = Math.max(absStartV * clampedRatioV, 1e-4)
-
-          model.scale[lp.vKey] = newSV
-          model.scale[lp.hKey] = Math.max(Math.abs(startScale[lp.hKey]), 1e-4)
-
+          // Bottom or Top edge -> based on vertical axis
+          ratio = localDelta[lp.vKey] / startExtentV
         } else {
-          // Right or Left edge -> scales horizontal axis (e.g. X)
-          const ratioH = localDelta[lp.hKey] / startExtentH
-          if (!Number.isFinite(ratioH)) return
-          const clampedRatioH = Math.min(Math.max(ratioH, 0.02), 50)
-          const absStartH = Math.max(Math.abs(startScale[lp.hKey]), 1e-4)
-          const newSH = Math.max(absStartH * clampedRatioH, 1e-4)
-
-          model.scale[lp.hKey] = newSH
-          model.scale[lp.vKey] = Math.max(Math.abs(startScale[lp.vKey]), 1e-4)
+          // Right or Left edge -> based on horizontal axis
+          ratio = localDelta[lp.hKey] / startExtentH
         }
+        if (!Number.isFinite(ratio)) return
+        const uniform = Math.min(Math.max(ratio, 0.02), 50)
+
+        model.scale.set(
+          Math.max(Math.abs(startScale.x) * uniform, 1e-4),
+          Math.max(Math.abs(startScale.y) * uniform, 1e-4),
+          Math.max(Math.abs(startScale.z) * uniform, 1e-4)
+        )
 
         // Keep opposite edge fixed in world space
         const newOffset = new THREE.Vector3(
@@ -649,6 +645,9 @@ export function createRectGizmo({
     lockedPlaneGeom = null
     if (orbitControls) orbitControls.enabled = true
     domElement.style.cursor = ''
+    // Clear hover highlight — it would otherwise stick until the next pointermove
+    cornerObjs.forEach((c) => { c.outer.material = outerMat })
+    edgeObjs.forEach((eg) => { eg.outer.material = outerMat })
     onTransformChange(true)
   }
 

@@ -34,6 +34,7 @@ export default function PreviewViewport({
   const mediaPanelRef = useRef(null)
   const transformControlsRef = useRef(null)
   const rotateControlsRef = useRef(null)
+  const scaleControlsRef = useRef(null)
   const rectGizmoRef = useRef(null)
   const [aspect, setAspect] = useState(0.75)
   const [modelState, setModelState] = useState('')
@@ -45,6 +46,12 @@ export default function PreviewViewport({
   const [rectOrientation, setRectOrientation] = useState('horizontal')
   const aspectRef = useRef(aspect)
   const onTransformChangeRef = useRef(onTransformChange)
+  const onAnimationControllerRef = useRef(onAnimationController)
+  const transformModeRef = useRef(transformMode)
+
+  useEffect(() => {
+    transformModeRef.current = transformMode
+  }, [transformMode])
 
   useEffect(() => {
     aspectRef.current = aspect
@@ -53,6 +60,10 @@ export default function PreviewViewport({
   useEffect(() => {
     onTransformChangeRef.current = onTransformChange
   }, [onTransformChange])
+
+  useEffect(() => {
+    onAnimationControllerRef.current = onAnimationController
+  }, [onAnimationController])
 
   useEffect(() => {
     if (!target?.image) return
@@ -101,6 +112,72 @@ export default function PreviewViewport({
       100
     )
     camera.position.set(1.4, 1.1, 1.8)
+
+    // Precision-fix TransformControls picking: stock scale pickers are fat 0.6-long
+    // cones that overlap every axis in screen space — clicking the X cube often
+    // ray-hits the Y/Z cone or the center box first, so the wrong axis scales.
+    // Replace them with small boxes sitting exactly on the visible cubes, slim the
+    // translate cones, and enlarge the tiny stock scale cubes (0.08 -> 0.12).
+    const sharpenPickers = (controls, hideCenterCube = false) => {
+      const gz = controls._gizmo
+      if (!gz) return
+
+      const axisDirs = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] }
+
+      const scalePicker = gz.picker?.scale
+      if (scalePicker) {
+        Object.entries(axisDirs).forEach(([name, d]) => {
+          const holder = scalePicker.getObjectByName(name)
+          if (!holder?.isGroup) return
+          const mat = holder.children.find((c) => c.isMesh)?.material
+          holder.children.slice().forEach((c) => {
+            holder.remove(c)
+            c.geometry?.dispose?.()
+          })
+          const box = new THREE.BoxGeometry(0.2, 0.2, 0.2)
+          ;[1, -1].forEach((sign) => {
+            const m = new THREE.Mesh(box, mat)
+            m.name = name
+            m.position.set(d[0] * 0.5 * sign, d[1] * 0.5 * sign, d[2] * 0.5 * sign)
+            holder.add(m)
+          })
+        })
+        scalePicker.getObjectByName('XYZ')?.traverse((c) => {
+          if (!c.isMesh) return
+          c.geometry?.dispose?.()
+          c.geometry = new THREE.BoxGeometry(0.16, 0.16, 0.16)
+        })
+      }
+
+      const translatePicker = gz.picker?.translate
+      if (translatePicker) {
+        Object.keys(axisDirs).forEach((name) => {
+          const holder = translatePicker.getObjectByName(name)
+          if (!holder?.isGroup) return
+          holder.children.forEach((c) => {
+            if (!c.isMesh || c.geometry?.type !== 'CylinderGeometry') return
+            c.geometry.dispose()
+            c.geometry = new THREE.CylinderGeometry(0.08, 0, 0.6, 4)
+          })
+        })
+      }
+
+      const scaleGizmo = gz.gizmo?.scale
+      if (scaleGizmo) {
+        Object.keys(axisDirs).forEach((name) => {
+          scaleGizmo.getObjectByName(name)?.children.slice().forEach((c) => {
+            if (!c.isMesh || c.geometry?.type !== 'BoxGeometry') return
+            c.geometry.dispose()
+            c.geometry = new THREE.BoxGeometry(0.12, 0.12, 0.12)
+          })
+        })
+        if (hideCenterCube) {
+          scaleGizmo.getObjectByName('XYZ')?.traverse((c) => {
+            if (c.isMesh) c.visible = false
+          })
+        }
+      }
+    }
 
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
@@ -193,6 +270,8 @@ export default function PreviewViewport({
       child.geometry?.dispose?.()
     })
 
+    sharpenPickers(transformControls, false)
+
     // 2. Rotation TransformControls (for Rotate tool & Universal multi-tool mode)
     const rotateControls = new TransformControls(camera, renderer.domElement)
     rotateControls.setSpace('world')
@@ -217,46 +296,67 @@ export default function PreviewViewport({
     scene.add(rotateHelper)
     rotateControlsRef.current = rotateControls
 
-    const scaleStart = new THREE.Vector3(1, 1, 1)
-    const onDraggingChanged = (event) => {
-      controls.enabled = !event.value
-    }
-    transformControls.addEventListener('dragging-changed', onDraggingChanged)
-    rotateControls.addEventListener('dragging-changed', onDraggingChanged)
+    // 3. Scale TransformControls (used by Scale tool & Universal multi-tool mode)
+    const scaleControls = new TransformControls(camera, renderer.domElement)
+    scaleControls.setSpace('world')
+    scaleControls.setMode('scale')
+    scaleControls.setColors(0xff385c, 0x22cc55, 0x2988ff, 0xffea00)
+    scaleControls.size = 1.05
+    scaleControls.showX = true
+    scaleControls.showY = true
+    scaleControls.showZ = true
+    scaleControls.showXY = false
+    scaleControls.showYZ = false
+    scaleControls.showXZ = false
+    scaleControls.showXYZE = false
+    scaleControls.showE = false
 
-    transformControls.addEventListener('mouseDown', () => {
-      if (transformControls.getMode() === 'scale') {
-        scaleStart.copy(modelGroupRef.current?.scale ?? new THREE.Vector3(1, 1, 1))
+    const scaleHelper = scaleControls.getHelper()
+    scaleHelper.traverse((child) => {
+      if (child.material) {
+        child.material.depthTest = false
+        child.material.depthWrite = false
+        child.material.transparent = true
+        child.renderOrder = 9997
       }
+    })
+    sharpenPickers(scaleControls, true)
+    scene.add(scaleHelper)
+    scaleControlsRef.current = scaleControls
+
+    // In Universal mode all three controls share the canvas and their picker
+    // volumes overlap — disable the others while one is dragging so a press on
+    // an outer arrow can't start translate AND rotate AND scale at the same time.
+    const beginExclusive = (self) => {
+      controls.enabled = false
+      if (transformModeRef.current !== 'universal') return
+      if (self !== transformControls) transformControls.enabled = false
+      if (self !== rotateControls) rotateControls.enabled = false
+      if (self !== scaleControls) scaleControls.enabled = false
+    }
+    const endExclusive = () => {
+      controls.enabled = true
+      if (transformModeRef.current !== 'universal') return
+      transformControls.enabled = true
+      rotateControls.enabled = true
+      scaleControls.enabled = true
+    }
+    transformControls.addEventListener('dragging-changed', (event) => {
+      if (event.value) beginExclusive(transformControls)
+      else endExclusive()
+    })
+    rotateControls.addEventListener('dragging-changed', (event) => {
+      if (event.value) beginExclusive(rotateControls)
+      else endExclusive()
+    })
+    scaleControls.addEventListener('dragging-changed', (event) => {
+      if (event.value) beginExclusive(scaleControls)
+      else endExclusive()
     })
 
     const reportTransform = (commit) => {
       const group = modelGroupRef.current
       if (!group) return
-
-      // In scale mode: enforce equal scaling across all axes (Screenshot 2 requirement)
-      if (transformControls.getMode() === 'scale') {
-        let factor = 1
-        const axis = transformControls.axis
-        if (axis === 'X') {
-          factor = group.scale.x / (scaleStart.x || 1)
-        } else if (axis === 'Y') {
-          factor = group.scale.y / (scaleStart.y || 1)
-        } else if (axis === 'Z') {
-          factor = group.scale.z / (scaleStart.z || 1)
-        } else {
-          const fx = group.scale.x / (scaleStart.x || 1)
-          const fy = group.scale.y / (scaleStart.y || 1)
-          const fz = group.scale.z / (scaleStart.z || 1)
-          const dx = Math.abs(fx - 1)
-          const dy = Math.abs(fy - 1)
-          const dz = Math.abs(fz - 1)
-          factor = dx > dy ? (dx > dz ? fx : fz) : (dy > dz ? fy : fz)
-        }
-        if (Number.isFinite(factor) && factor > 0.001) {
-          group.scale.copy(scaleStart).multiplyScalar(factor)
-        }
-      }
 
       onTransformChangeRef.current?.(
         {
@@ -279,6 +379,8 @@ export default function PreviewViewport({
     transformControls.addEventListener('mouseUp', () => reportTransform(true))
     rotateControls.addEventListener('objectChange', () => reportTransform(false))
     rotateControls.addEventListener('mouseUp', () => reportTransform(true))
+    scaleControls.addEventListener('objectChange', () => reportTransform(false))
+    scaleControls.addEventListener('mouseUp', () => reportTransform(true))
 
     transformControlsRef.current = transformControls
     scene.add(transformControls.getHelper())
@@ -354,6 +456,9 @@ export default function PreviewViewport({
       rotateControls.detach()
       rotateControls.dispose()
       rotateControlsRef.current = null
+      scaleControls.detach()
+      scaleControls.dispose()
+      scaleControlsRef.current = null
       transformControls.detach()
       transformControls.dispose()
       transformControlsRef.current = null
@@ -376,12 +481,14 @@ export default function PreviewViewport({
     } catch (err) {
       console.error('[VP] renderer effect THREW:', err)
     }
-  }, [onAnimationController])
+    // Scene setup is once-per-mount; callback identity changes go through the ref.
+  }, [])
 
   // Synchronize active gizmo tools with transformMode, space, snaps, and model state
   useEffect(() => {
     const tc = transformControlsRef.current
     const rc = rotateControlsRef.current
+    const sc = scaleControlsRef.current
     const rg = rectGizmoRef.current
     const model = modelGroupRef.current
     if (!tc) return
@@ -392,17 +499,31 @@ export default function PreviewViewport({
       rc.setSpace(space)
       rc.setSize(gizmoSize * 1.05)
     }
+    if (sc) {
+      sc.setSpace(space)
+      sc.setSize(gizmoSize * 1.55)
+    }
 
     if (snapEnabled) {
       tc.setTranslationSnap(0.1)
       tc.setRotationSnap(THREE.MathUtils.degToRad(15))
       tc.setScaleSnap(0.1)
       rc?.setRotationSnap(THREE.MathUtils.degToRad(15))
+      sc?.setScaleSnap(0.1)
     } else {
       tc.setTranslationSnap(null)
       tc.setRotationSnap(null)
       tc.setScaleSnap(null)
       rc?.setRotationSnap(null)
+      sc?.setScaleSnap(null)
+    }
+
+    const hideScale = () => {
+      sc?.detach()
+      if (sc) {
+        sc.enabled = false
+        if (sc.getHelper()) sc.getHelper().visible = false
+      }
     }
 
     if (!model || transformMode === 'view') {
@@ -414,6 +535,7 @@ export default function PreviewViewport({
         rc.enabled = false
         if (rc.getHelper()) rc.getHelper().visible = false
       }
+      hideScale()
       rg?.setVisible(false)
       return
     }
@@ -437,6 +559,7 @@ export default function PreviewViewport({
         rc.enabled = false
         if (rc.getHelper()) rc.getHelper().visible = false
       }
+      hideScale()
       rg?.setVisible(false)
     } else if (transformMode === 'rotate') {
       // 2. Rotate Tool: 3 colored rotation rings
@@ -449,6 +572,7 @@ export default function PreviewViewport({
         if (rc.object !== model) rc.attach(model)
         if (rc.getHelper()) rc.getHelper().visible = true
       }
+      hideScale()
       rg?.setVisible(false)
     } else if (transformMode === 'scale') {
       // 3. Scale Tool (Screenshot 2 reference): 3 colored boxes + silver center cube, equal scaling
@@ -469,6 +593,7 @@ export default function PreviewViewport({
         rc.enabled = false
         if (rc.getHelper()) rc.getHelper().visible = false
       }
+      hideScale()
       rg?.setVisible(false)
     } else if (transformMode === 'rect') {
       // 4. Rect Tool (Screenshot 3 reference): oriented 2D frame with 4 corner scale handles & center move
@@ -480,13 +605,15 @@ export default function PreviewViewport({
         rc.enabled = false
         if (rc.getHelper()) rc.getHelper().visible = false
       }
+      hideScale()
       if (rg) {
         rg.setOrientation(rectOrientation)
         rg.setUniversal(false)
         rg.setVisible(true)
       }
     } else if (transformMode === 'universal') {
-      // 5. Transform Tool: Move arrows + center cube & Rotate rings (Rect tool removed)
+      // 5. Transform Tool: Move arrows + center cube, Rotate rings & Scale handles
+      // Scale cubes sized larger than the rings so they sit outside them
       tc.enabled = true
       tc.setMode('translate')
       tc.showX = true
@@ -505,9 +632,15 @@ export default function PreviewViewport({
         if (rc.getHelper()) rc.getHelper().visible = true
       }
 
+      if (sc) {
+        sc.enabled = true
+        if (sc.object !== model) sc.attach(model)
+        if (sc.getHelper()) sc.getHelper().visible = true
+      }
+
       rg?.setVisible(false)
     }
-  }, [transformMode, space, snapEnabled, gizmoSize, modelReady])
+  }, [transformMode, space, snapEnabled, gizmoSize, modelReady, rectOrientation])
 
   const handleReset = (type) => {
     if (type === 'pos') {
@@ -540,13 +673,14 @@ export default function PreviewViewport({
     modelGroupRef.current = null
     transformControlsRef.current?.detach()
     rotateControlsRef.current?.detach()
+    scaleControlsRef.current?.detach()
     rectGizmoRef.current?.setVisible(false)
     setModelReady(false)
     animCtlRef.current?.dispose()
     animCtlRef.current = null
     mediaPanelRef.current?.dispose()
     mediaPanelRef.current = null
-    onAnimationController?.(null)
+    onAnimationControllerRef.current?.(null)
 
     while (world.children.length) {
       const child = world.children[0]
@@ -628,7 +762,7 @@ export default function PreviewViewport({
             const ctl = createAnimationController(gltf)
             ctl.play()
             animCtlRef.current = ctl
-            onAnimationController?.(ctl)
+            onAnimationControllerRef.current?.(ctl)
           }
           setModelReady(true)
           setModelState('')
@@ -645,7 +779,7 @@ export default function PreviewViewport({
     } else {
       setModelState('')
     }
-  }, [target, asset, aspect, onAnimationController])
+  }, [target, asset, aspect])
 
   // Live transform
   useEffect(() => {
