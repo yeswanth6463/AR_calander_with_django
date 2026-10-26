@@ -8,12 +8,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
-from .models import Project, TargetImage, ModelAsset, ARExperience
+from .models import Project, TargetImage, ModelAsset, ARExperience, ExperienceItem
 from .serializer import (
     ProjectSerializer,
     TargetImageSerializer,
     ModelAssetSerializer,
     ARExperienceSerializer,
+    ExperienceItemSerializer,
 )
 from .service.image_tracker import (
     extract_target_features,
@@ -70,9 +71,31 @@ class ARExperienceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return _by_project(
-            ARExperience.objects.filter(project__user=self.request.user),
+            ARExperience.objects.filter(project__user=self.request.user)
+            .prefetch_related("items"),
             self.request,
         )
+
+
+class ExperienceItemViewSet(viewsets.ModelViewSet):
+    serializer_class = ExperienceItemSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = ExperienceItem.objects.filter(
+            experience__project__user=self.request.user
+        ).select_related("experience", "target_image", "model_asset")
+        experience = self.request.query_params.get("experience")
+        if experience:
+            queryset = queryset.filter(experience_id=experience)
+        return queryset
+
+    def perform_create(self, serializer):
+        experience = serializer.validated_data["experience"]
+        order = serializer.validated_data.get("order")
+        if order is None:
+            order = ExperienceItem.objects.filter(experience=experience).count()
+        serializer.save(order=order)
 
 
 @api_view(["POST"])

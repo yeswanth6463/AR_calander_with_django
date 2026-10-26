@@ -21,22 +21,23 @@ const rel = (url) => {
 }
 
 export default function PreviewViewport({
-  target,
-  asset,
-  transform,
+  items = [],
+  selectedItemId = null,
   onAnimationController,
   onTransformChange,
 }) {
   const mountRef = useRef(null)
   const worldRef = useRef(null)
+  const controlsRef = useRef(null)
   const modelGroupRef = useRef(null)
-  const animCtlRef = useRef(null)
-  const mediaPanelRef = useRef(null)
+  const groupsRef = useRef(new Map())
+  const animCtlsRef = useRef(new Map())
+  const mediaPanelsRef = useRef(new Map())
   const transformControlsRef = useRef(null)
   const rotateControlsRef = useRef(null)
   const scaleControlsRef = useRef(null)
   const rectGizmoRef = useRef(null)
-  const [aspect, setAspect] = useState(0.75)
+  const [aspectMap, setAspectMap] = useState({})
   const [modelState, setModelState] = useState('')
   const [transformMode, setTransformMode] = useState('translate')
   const [space, setSpace] = useState('world')
@@ -44,18 +45,39 @@ export default function PreviewViewport({
   const [gizmoSize, setGizmoSize] = useState(1)
   const [modelReady, setModelReady] = useState(false)
   const [rectOrientation, setRectOrientation] = useState('horizontal')
-  const aspectRef = useRef(aspect)
   const onTransformChangeRef = useRef(onTransformChange)
   const onAnimationControllerRef = useRef(onAnimationController)
   const transformModeRef = useRef(transformMode)
+  const selectedItemIdRef = useRef(selectedItemId)
+  const layoutRef = useRef([])
+
+  // Row layout: distinct markers side by side, each item on its own marker.
+  const targetsKey = items.map((i) => i.target?.id ?? '').join(',')
+  const layout = []
+  {
+    const seen = new Map()
+    let ox = 0
+    for (const item of items) {
+      if (!item.target?.id) continue
+      if (!seen.has(item.target.id)) {
+        seen.set(item.target.id, { ox, aspect: aspectMap[item.target.id] ?? 0.75 })
+        ox += 1.4
+      }
+      const slot = seen.get(item.target.id)
+      layout.push({ ...item, ox: slot.ox, aspect: slot.aspect })
+    }
+  }
+  const layoutKey = layout.map((e) => `${e.id}|${e.target.id}|${e.asset?.id ?? ''}`).join(',')
+  const aspectsKey = layout.map((e) => e.aspect.toFixed(3)).join(',')
+
+  useEffect(() => {
+    selectedItemIdRef.current = selectedItemId
+    layoutRef.current = layout
+  })
 
   useEffect(() => {
     transformModeRef.current = transformMode
   }, [transformMode])
-
-  useEffect(() => {
-    aspectRef.current = aspect
-  }, [aspect])
 
   useEffect(() => {
     onTransformChangeRef.current = onTransformChange
@@ -65,14 +87,29 @@ export default function PreviewViewport({
     onAnimationControllerRef.current = onAnimationController
   }, [onAnimationController])
 
+  // Load natural aspect ratios for every marker used in the scene.
   useEffect(() => {
-    if (!target?.image) return
-    const img = new Image()
-    img.onload = () => {
-      if (img.naturalWidth) setAspect(img.naturalHeight / img.naturalWidth)
+    const ids = targetsKey ? targetsKey.split(',').filter(Boolean) : []
+    let alive = true
+    for (const id of ids) {
+      const item = items.find((i) => i.target?.id === id)
+      if (!item) continue
+      const img = new Image()
+      img.onload = () => {
+        if (!alive || !img.naturalWidth) return
+        const value = img.naturalHeight / img.naturalWidth
+        setAspectMap((current) =>
+          current[id] && Math.abs(current[id] - value) < 1e-6
+            ? current
+            : { ...current, [id]: value }
+        )
+      }
+      img.src = rel(item.target.image)
     }
-    img.src = rel(target.image)
-  }, [target])
+    return () => {
+      alive = false
+    }
+  }, [targetsKey])
 
   useEffect(() => {
     const mount = mountRef.current
@@ -183,6 +220,7 @@ export default function PreviewViewport({
     controls.enableDamping = true
     controls.target.set(0.5, 0.1, 0.4)
     controls.maxPolarAngle = Math.PI / 2.05
+    controlsRef.current = controls
 
     // 1. Translation / Scale TransformControls
     const transformControls = new TransformControls(camera, renderer.domElement)
@@ -357,11 +395,16 @@ export default function PreviewViewport({
     const reportTransform = (commit) => {
       const group = modelGroupRef.current
       if (!group) return
+      const entry = layoutRef.current.find(
+        (e) => groupsRef.current.get(e.id) === group
+      )
+      if (!entry) return
 
       onTransformChangeRef.current?.(
+        entry.id,
         {
-          position_x: group.position.x - 0.5,
-          position_y: aspectRef.current / 2 - group.position.z,
+          position_x: group.position.x - entry.ox - 0.5,
+          position_y: entry.aspect / 2 - group.position.z,
           position_z: group.position.y,
           rotation_x: THREE.MathUtils.radToDeg(group.rotation.x),
           rotation_y: THREE.MathUtils.radToDeg(group.rotation.y),
@@ -427,8 +470,8 @@ export default function PreviewViewport({
     const animate = () => {
       raf = requestAnimationFrame(animate)
       const dt = clock.getDelta()
-      animCtlRef.current?.update(dt)
-      mediaPanelRef.current?.update()
+      for (const ctl of animCtlsRef.current.values()) ctl.update(dt)
+      for (const panel of mediaPanelsRef.current.values()) panel.update()
       rectGizmoRef.current?.update()
       controls.update()
       renderer.render(scene, camera)
@@ -447,10 +490,10 @@ export default function PreviewViewport({
 
     return () => {
       cancelAnimationFrame(raf)
-      animCtlRef.current?.dispose()
-      animCtlRef.current = null
-      mediaPanelRef.current?.dispose()
-      mediaPanelRef.current = null
+      for (const ctl of animCtlsRef.current.values()) ctl.dispose()
+      animCtlsRef.current.clear()
+      for (const panel of mediaPanelsRef.current.values()) panel.dispose()
+      mediaPanelsRef.current.clear()
       rectGizmo.dispose()
       rectGizmoRef.current = null
       rotateControls.detach()
@@ -465,6 +508,7 @@ export default function PreviewViewport({
       window.removeEventListener('resize', onResize)
       themeObserver.disconnect()
       controls.dispose()
+      controlsRef.current = null
       renderer.dispose()
       world.traverse((o) => {
         o.geometry?.dispose?.()
@@ -484,8 +528,10 @@ export default function PreviewViewport({
     // Scene setup is once-per-mount; callback identity changes go through the ref.
   }, [])
 
-  // Synchronize active gizmo tools with transformMode, space, snaps, and model state
-  useEffect(() => {
+  // Synchronize active gizmo tools with transformMode, space, snaps, and model
+  // state. Plain function (not just an effect) so scene rebuilds and selection
+  // changes can re-attach immediately after the selected group changes.
+  const syncGizmos = () => {
     const tc = transformControlsRef.current
     const rc = rotateControlsRef.current
     const sc = scaleControlsRef.current
@@ -640,17 +686,23 @@ export default function PreviewViewport({
 
       rg?.setVisible(false)
     }
+  }
+
+  useEffect(() => {
+    syncGizmos()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transformMode, space, snapEnabled, gizmoSize, modelReady, rectOrientation])
 
   const handleReset = (type) => {
+    const itemId = selectedItemIdRef.current
     if (type === 'pos') {
-      onTransformChangeRef.current?.({ position_x: 0, position_y: 0, position_z: 0 }, true)
+      onTransformChangeRef.current?.(itemId, { position_x: 0, position_y: 0, position_z: 0 }, true)
     } else if (type === 'rot') {
-      onTransformChangeRef.current?.({ rotation_x: 0, rotation_y: 0, rotation_z: 0 }, true)
+      onTransformChangeRef.current?.(itemId, { rotation_x: 0, rotation_y: 0, rotation_z: 0 }, true)
     } else if (type === 'scale') {
-      onTransformChangeRef.current?.({ scale_x: 1, scale_y: 1, scale_z: 1, scale: 1 }, true)
+      onTransformChangeRef.current?.(itemId, { scale_x: 1, scale_y: 1, scale_z: 1, scale: 1 }, true)
     } else {
-      onTransformChangeRef.current?.({
+      onTransformChangeRef.current?.(itemId, {
         position_x: 0,
         position_y: 0,
         position_z: 0,
@@ -665,21 +717,41 @@ export default function PreviewViewport({
     }
   }
 
-  // Rebuild scene contents when target / model changes
+  // Preview mapping: AR frame (x right, y down-image, z out-of-plane)
+  // -> ground plane (x right, z depth, y up); origin at plane center, with the
+  // plane offset by its row slot (entry.ox).
+  const applyTransforms = () => {
+    for (const entry of layoutRef.current) {
+      const g = groupsRef.current.get(entry.id)
+      if (!g || !entry.transform) continue
+      const [px, py, pz] = entry.transform.position
+      const [rx, ry, rz] = entry.transform.rotation
+      g.position.set(entry.ox + 0.5 + px, pz, entry.aspect / 2 - py)
+      g.rotation.set(deg(rx), deg(ry), deg(rz))
+      if (Array.isArray(entry.transform.scale)) {
+        g.scale.set(...entry.transform.scale)
+      } else {
+        g.scale.setScalar(entry.transform.scale)
+      }
+    }
+  }
+
+  // Rebuild scene contents when the item set (markers / models) changes
   useEffect(() => {
     const world = worldRef.current
     if (!world) return
 
     modelGroupRef.current = null
+    groupsRef.current = new Map()
     transformControlsRef.current?.detach()
     rotateControlsRef.current?.detach()
     scaleControlsRef.current?.detach()
     rectGizmoRef.current?.setVisible(false)
     setModelReady(false)
-    animCtlRef.current?.dispose()
-    animCtlRef.current = null
-    mediaPanelRef.current?.dispose()
-    mediaPanelRef.current = null
+    for (const ctl of animCtlsRef.current.values()) ctl.dispose()
+    animCtlsRef.current.clear()
+    for (const panel of mediaPanelsRef.current.values()) panel.dispose()
+    mediaPanelsRef.current.clear()
     onAnimationControllerRef.current?.(null)
 
     while (world.children.length) {
@@ -696,78 +768,122 @@ export default function PreviewViewport({
         }
       })
     }
-    if (!target) return
 
-    const planeGeo = new THREE.PlaneGeometry(1, aspect)
-    planeGeo.rotateX(-Math.PI / 2)
-    const tex = new THREE.TextureLoader().load(rel(target.image))
-    tex.colorSpace = THREE.SRGBColorSpace
-    const plane = new THREE.Mesh(
-      planeGeo,
-      new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, metalness: 0 })
-    )
-    plane.position.set(0.5, 0.001, aspect / 2)
-    world.add(plane)
+    const entries = layoutRef.current
+    if (!entries.length) {
+      setModelState('')
+      syncGizmos()
+      return
+    }
 
-    const edge = new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, aspect).rotateX(-Math.PI / 2)),
-      new THREE.LineBasicMaterial({ color: 0x3b6ef5 })
-    )
-    edge.position.set(0.5, 0.002, aspect / 2)
-    world.add(edge)
+    // Marker planes — one per distinct target image, laid out in a row.
+    const slots = new Map()
+    for (const entry of entries) {
+      if (slots.has(entry.target.id)) continue
+      slots.set(entry.target.id, {
+        ox: entry.ox,
+        aspect: entry.aspect,
+        image: entry.target.image,
+      })
+    }
+    for (const slot of slots.values()) {
+      const planeGeo = new THREE.PlaneGeometry(1, slot.aspect)
+      planeGeo.rotateX(-Math.PI / 2)
+      const tex = new THREE.TextureLoader().load(rel(slot.image))
+      tex.colorSpace = THREE.SRGBColorSpace
+      const plane = new THREE.Mesh(
+        planeGeo,
+        new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, metalness: 0 })
+      )
+      plane.position.set(slot.ox + 0.5, 0.001, slot.aspect / 2)
+      world.add(plane)
 
-    const modelGroup = new THREE.Group()
-    world.add(modelGroup)
-    modelGroupRef.current = modelGroup
+      const edge = new THREE.LineSegments(
+        new THREE.EdgesGeometry(
+          new THREE.PlaneGeometry(1, slot.aspect).rotateX(-Math.PI / 2)
+        ),
+        new THREE.LineBasicMaterial({ color: 0x3b6ef5 })
+      )
+      edge.position.set(slot.ox + 0.5, 0.002, slot.aspect / 2)
+      world.add(edge)
+    }
 
-    if (asset?.model_file) {
+    const controls = controlsRef.current
+    if (controls) {
+      const rowWidth = slots.size * 1.4 - 0.4
+      controls.target.set(Math.max(0.5, rowWidth / 2), 0.1, 0.4)
+    }
+
+    let pending = entries.length
+    let failed = 0
+    const finishOne = (ok) => {
+      if (!ok) failed++
+      pending--
+      if (pending > 0) return
+      setModelState(
+        failed ? `${failed} asset${failed > 1 ? 's' : ''} failed to load` : ''
+      )
+    }
+    setModelState('loading model…')
+
+    for (const entry of entries) {
+      const modelGroup = new THREE.Group()
+      world.add(modelGroup)
+      groupsRef.current.set(entry.id, modelGroup)
+
+      const asset = entry.asset
+      if (!asset?.model_file) {
+        finishOne(true)
+        continue
+      }
+
       const isMedia = ['mp4', 'webm', 'gif'].includes(asset.format)
-      setModelState(isMedia ? 'loading media…' : 'loading model…')
+      const stale = () => groupsRef.current.get(entry.id) !== modelGroup
+
       if (isMedia) {
         createMediaPanel(rel(asset.model_file), asset.format)
           .then((panel) => {
-            if (modelGroupRef.current !== modelGroup) {
+            if (stale()) {
               panel.dispose()
+              finishOne(false)
               return
             }
             modelGroup.add(panel.mesh)
-            mediaPanelRef.current = panel
-            transformControlsRef.current?.attach(modelGroup)
+            mediaPanelsRef.current.set(entry.id, panel)
             rectGizmoRef.current?.invalidateBounds?.()
             setModelReady(true)
-            setModelState('')
+            finishOne(true)
           })
           .catch((err) => {
             console.error('Could not load media asset:', err)
-            if (modelGroupRef.current === modelGroup) {
-              setModelState('media failed to load')
-            }
+            finishOne(false)
           })
       } else {
         new GLTFLoader().load(
           rel(asset.model_file),
           (gltf) => {
-          if (modelGroupRef.current !== modelGroup) return
-          const model = gltf.scene
-          const box = new THREE.Box3().setFromObject(model)
-          const size = box.getSize(new THREE.Vector3())
-          const maxDim = Math.max(size.x, size.y, size.z) || 1
-          const s = 0.5 / maxDim
-          model.scale.setScalar(s)
-          const box2 = new THREE.Box3().setFromObject(model)
-          const c = box2.getCenter(new THREE.Vector3())
-          model.position.set(-c.x, -box2.min.y, -c.z)
-          modelGroup.add(model)
-          transformControlsRef.current?.attach(modelGroup)
-          rectGizmoRef.current?.invalidateBounds?.()
-          if (gltf.animations?.length) {
-            const ctl = createAnimationController(gltf)
-            ctl.play()
-            animCtlRef.current = ctl
-            onAnimationControllerRef.current?.(ctl)
-          }
-          setModelReady(true)
-          setModelState('')
+            if (stale()) return
+            const model = gltf.scene
+            const box = new THREE.Box3().setFromObject(model)
+            const size = box.getSize(new THREE.Vector3())
+            const maxDim = Math.max(size.x, size.y, size.z) || 1
+            const s = 0.5 / maxDim
+            model.scale.setScalar(s)
+            const box2 = new THREE.Box3().setFromObject(model)
+            const c = box2.getCenter(new THREE.Vector3())
+            model.position.set(-c.x, -box2.min.y, -c.z)
+            modelGroup.add(model)
+            rectGizmoRef.current?.invalidateBounds?.()
+            if (gltf.animations?.length) {
+              const ctl = createAnimationController(gltf)
+              ctl.play()
+              animCtlsRef.current.set(entry.id, ctl)
+              if (selectedItemIdRef.current === entry.id) {
+                onAnimationControllerRef.current?.(ctl)
+              }
+            }
+            setModelReady(true)
+            finishOne(true)
           },
           (evt) => {
             if (evt.total) {
@@ -775,31 +891,35 @@ export default function PreviewViewport({
               setModelState(`loading model… ${pct}%`)
             }
           },
-          () => setModelState('model failed to load')
+          () => finishOne(false)
         )
       }
-    } else {
-      setModelState('')
     }
-  }, [target, asset, aspect])
 
-  // Live transform
+    applyTransforms()
+    modelGroupRef.current =
+      groupsRef.current.get(selectedItemIdRef.current) || null
+    syncGizmos()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutKey, aspectsKey])
+
+  // Selection change: re-point gizmos + animation panel at the chosen item.
+  useEffect(() => {
+    const itemId = selectedItemIdRef.current
+    modelGroupRef.current = groupsRef.current.get(itemId) || null
+    applyTransforms()
+    onAnimationControllerRef.current?.(animCtlsRef.current.get(itemId) || null)
+    syncGizmos()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedItemId])
+
+  // Live transform — applies every item's transform (transform edits come in
+  // as new `items` identities from the parent).
   useEffect(() => {
     if (rectGizmoRef.current?.isDragging?.()) return
-    const g = modelGroupRef.current
-    if (!g || !transform) return
-    const [px, py, pz] = transform.position
-    const [rx, ry, rz] = transform.rotation
-    // preview mapping: AR frame (x right, y down-image, z out-of-plane)
-    // -> ground plane (x right, z depth, y up); origin at plane center
-    g.position.set(0.5 + px, pz, aspect / 2 - py)
-    g.rotation.set(deg(rx), deg(ry), deg(rz))
-    if (Array.isArray(transform.scale)) {
-      g.scale.set(...transform.scale)
-    } else {
-      g.scale.setScalar(transform.scale)
-    }
-  }, [transform, target, aspect])
+    applyTransforms()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items])
 
   return (
     <div className="viewport">

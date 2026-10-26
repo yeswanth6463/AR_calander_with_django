@@ -135,15 +135,21 @@ class ARExperience(models.Model):
         related_name="experiences",
     )
     name = models.CharField(max_length=150, blank=True, default="")
+    # Legacy single-pair fields — kept so already-published links keep working.
+    # New scenes use `items` (many targets × many models) instead.
     target_image = models.ForeignKey(
         TargetImage,
         on_delete=models.PROTECT,
         related_name="experiences",
+        null=True,
+        blank=True,
     )
     model_asset = models.ForeignKey(
         ModelAsset,
         on_delete=models.PROTECT,
         related_name="experiences",
+        null=True,
+        blank=True,
     )
     status = models.CharField(
         max_length=20,
@@ -183,6 +189,75 @@ class ARExperience(models.Model):
 
     def __str__(self):
         return f"AR Experience - {self.project.name}"
+
+class ExperienceItem(models.Model):
+    """One (target image + model + transform) placement inside an experience.
+
+    An experience can hold many items: several markers, each carrying one or
+    more models, all served through the same published link.
+    """
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    experience = models.ForeignKey(
+        ARExperience,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    target_image = models.ForeignKey(
+        TargetImage,
+        on_delete=models.PROTECT,
+        related_name="experience_items",
+    )
+    model_asset = models.ForeignKey(
+        ModelAsset,
+        on_delete=models.PROTECT,
+        related_name="experience_items",
+    )
+    name = models.CharField(max_length=150, blank=True, default="")
+    order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    position_x = models.FloatField(default=0.0)
+    position_y = models.FloatField(default=0.0)
+    position_z = models.FloatField(default=0.0)
+    rotation_x = models.FloatField(default=0.0)
+    rotation_y = models.FloatField(default=0.0)
+    rotation_z = models.FloatField(default=0.0)
+    scale = models.FloatField(default=1.0)
+    scale_x = models.FloatField(default=1.0)
+    scale_y = models.FloatField(default=1.0)
+    scale_z = models.FloatField(default=1.0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "created_at"]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.target_image_id and self.experience_id:
+            if self.target_image.project_id != self.experience.project_id:
+                raise ValidationError(
+                    "Target image must belong to the same project."
+                )
+
+        if self.model_asset_id and self.experience_id:
+            if self.model_asset.project_id != self.experience.project_id:
+                raise ValidationError(
+                    "3D model must belong to the same project."
+                )
+
+        if min(self.scale_x, self.scale_y, self.scale_z) <= 0:
+            raise ValidationError("Scale values must be greater than zero.")
+
+    def __str__(self):
+        return f"Item {self.name or self.id} ({self.experience_id})"
 
 class PublishedExperience(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
