@@ -7,6 +7,7 @@ All deployment-sensitive values are read from environment variables
 
 from pathlib import Path
 
+# pyrefly: ignore[missing-import]
 from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.

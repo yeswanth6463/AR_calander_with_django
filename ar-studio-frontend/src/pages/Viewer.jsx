@@ -5,7 +5,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { ImageTracker } from '../ar/tracker'
 import { poseFromHomography, smoothCorners } from '../ar/pose'
 import { createAnimationController } from '../ar/animation'
-import AnimationPanel from '../components/AnimationPanel'
 import { api } from '../api'
 
 const rel = (url) => {
@@ -75,7 +74,6 @@ export default function Viewer() {
   const [status, setStatus] = useState('loading experience…')
   const [trackState, setTrackState] = useState('idle')
   const [fps, setFps] = useState(0)
-  const [animCtl, setAnimCtl] = useState(null)
 
   useEffect(() => {
     let disposed = false
@@ -130,14 +128,25 @@ export default function Viewer() {
         anchor.visible = false
         scene.add(anchor)
 
+        const targetWorldWidth = exp.target.width > 0 ? exp.target.width : 1
         const targetAspect = tracker.targetH / tracker.targetW
         const content = new THREE.Group()
-        content.position.set(0.5, -targetAspect / 2, 0)
-        content.scale.setScalar(exp.target.width)
+        content.position.set(
+          0.5 * targetWorldWidth,
+          (targetAspect / 2) * targetWorldWidth,
+          0
+        )
         anchor.add(content)
 
+        // Dedicated model-orientation group: converts anchor frame (+X right, +Y down, +Z into target)
+        // to natural model frame (+X right, +Y upright, +Z toward camera) without rotating tracking anchor.
+        const modelOrientation = new THREE.Group()
+        modelOrientation.rotation.x = Math.PI
+        modelOrientation.scale.setScalar(targetWorldWidth)
+        content.add(modelOrientation)
+
         const fit = new THREE.Group()
-        content.add(fit)
+        modelOrientation.add(fit)
 
         const { transform } = exp
         fit.position.set(...transform.position)
@@ -150,6 +159,7 @@ export default function Viewer() {
 
         setStatus('loading 3D model…')
         new GLTFLoader().load(rel(exp.model.url), (gltf) => {
+          if (disposed) return
           const model = gltf.scene
           const box = new THREE.Box3().setFromObject(model)
           const size = box.getSize(new THREE.Vector3())
@@ -165,11 +175,10 @@ export default function Viewer() {
             if (exp.animation) ctl.applySettings(exp.animation)
             else ctl.play()
             animRef.current = ctl
-            setAnimCtl(ctl)
           }
           setStatus('point your camera at the target image')
         }, undefined, () => {
-          setStatus('target ready — model failed to load (check format)')
+          if (!disposed) setStatus('target ready — model failed to load (check format)')
         })
 
         let smoothed = null
@@ -177,9 +186,23 @@ export default function Viewer() {
         let frames = 0
         let fpsClock = performance.now()
         let raf = 0
+        let lastTrackState = 'idle'
+        let lastTrackWarning = 0
         const clock = new THREE.Clock()
         const trackerRef = { current: null }
         trackerRef.current = tracker
+
+        const targetPos = new THREE.Vector3()
+        const targetQuat = new THREE.Quaternion()
+        const targetScale = new THREE.Vector3()
+        const poseMat = new THREE.Matrix4()
+        let hasPose = false
+
+        const publishTrackState = (next) => {
+          if (next === lastTrackState) return
+          lastTrackState = next
+          setTrackState(next)
+        }
 
         const loop = () => {
           raf = requestAnimationFrame(loop)
@@ -193,19 +216,63 @@ export default function Viewer() {
             fpsClock = now
           }
 
-          const r = trackerRef.current.track(video)
+          let r
+          try {
+            r = trackerRef.current.track(video)
+          } catch (err) {
+            // A failed frame is just a lost frame; never let it stop rendering.
+            r = { found: false, reason: 'tracking error' }
+            if (now - lastTrackWarning >= 5000) {
+              lastTrackWarning = now
+              console.warn('[Viewer] tracking frame failed:', err)
+            }
+          }
+
           if (r.found) {
-            smoothed = smoothCorners(smoothed, r.corners, 0.4)
-            const m = poseFromHomography(r.H, glCanvas.width, glCanvas.height, 60)
-            anchor.matrix.fromArray(m)
-            anchor.matrixWorldNeedsUpdate = true
-            anchor.visible = true
-            lastFound = now
-            setTrackState('found')
-          } else if (now - lastFound > 300) {
+            try {
+              const m = poseFromHomography(
+                r.H,
+                glCanvas.width,
+                glCanvas.height,
+                60,
+                trackerRef.current.targetW,
+                targetWorldWidth
+              )
+              smoothed = smoothCorners(smoothed, r.corners, 0.4)
+
+              poseMat.fromArray(m)
+              poseMat.decompose(targetPos, targetQuat, targetScale)
+
+              if (!hasPose || !anchor.visible) {
+                anchor.position.copy(targetPos)
+                anchor.quaternion.copy(targetQuat)
+                anchor.scale.copy(targetScale)
+                hasPose = true
+              } else {
+                anchor.position.lerp(targetPos, 0.35)
+                anchor.quaternion.slerp(targetQuat, 0.35)
+                anchor.scale.lerp(targetScale, 0.35)
+              }
+
+              anchor.matrix.compose(anchor.position, anchor.quaternion, anchor.scale)
+              anchor.matrixWorldNeedsUpdate = true
+              anchor.visible = true
+              lastFound = now
+              publishTrackState('found')
+            } catch (err) {
+              r = { found: false, reason: 'pose failed' }
+              if (now - lastTrackWarning >= 5000) {
+                lastTrackWarning = now
+                console.warn('[Viewer] pose calculation failed:', err)
+              }
+            }
+          }
+
+          if (!r.found && now - lastFound > 300) {
             smoothed = null
+            hasPose = false
             anchor.visible = false
-            setTrackState(`lost (${r.reason})`)
+            publishTrackState(`lost (${r.reason})`)
           }
           renderer.render(scene, camera)
         }
@@ -216,6 +283,7 @@ export default function Viewer() {
           animRef.current?.dispose()
           animRef.current = null
           stream.getTracks().forEach((t) => t.stop())
+          video.srcObject = null
           renderer.dispose()
           scene.traverse((o) => {
             o.geometry?.dispose?.()
@@ -248,7 +316,6 @@ export default function Viewer() {
         </div>
         {error ? <div className="lost">{error}</div> : status !== 'ready' && <div className="muted">{status}</div>}
       </div>
-      {animCtl && <AnimationPanel controller={animCtl} />}
     </div>
   )
 }
