@@ -47,9 +47,41 @@ export default function ProjectDetail() {
   }, [load])
 
   const selected = experiences.find((e) => e.id === selectedId) || null
-  const selectedItems = useMemo(() => selected?.items ?? [], [selected])
+  const selectedItems = useMemo(() => {
+    if (!selected) return []
+    if (selected.items && selected.items.length > 0) {
+      return selected.items
+    }
+    if (selected.target_image && selected.model_asset) {
+      return [
+        {
+          id: selected.id,
+          target_image: selected.target_image,
+          model_asset: selected.model_asset,
+          position_x: selected.position_x ?? 0,
+          position_y: selected.position_y ?? 0,
+          position_z: selected.position_z ?? 0,
+          rotation_x: selected.rotation_x ?? 0,
+          rotation_y: selected.rotation_y ?? 0,
+          rotation_z: selected.rotation_z ?? 0,
+          scale: selected.scale ?? 1,
+          scale_x: selected.scale_x ?? 1,
+          scale_y: selected.scale_y ?? 1,
+          scale_z: selected.scale_z ?? 1,
+        },
+      ]
+    }
+    return []
+  }, [selected])
   const selectedItem =
     selectedItems.find((item) => item.id === selectedItemId) || null
+
+  // Auto-select first experience if none selected
+  useEffect(() => {
+    if (!selectedId && experiences.length > 0) {
+      setSelectedId(experiences[0].id)
+    }
+  }, [experiences, selectedId])
 
   // Keep a valid item of the active experience selected.
   useEffect(() => {
@@ -84,24 +116,32 @@ export default function ProjectDetail() {
     (itemId, values, commit) => {
       if (!itemId) return
       setExperiences((current) =>
-        current.map((experience) =>
-          experience.id !== selectedId
-            ? experience
-            : {
-                ...experience,
-                items: (experience.items || []).map((item) =>
-                  item.id === itemId ? { ...item, ...values } : item
-                ),
-              }
-        )
+        current.map((experience) => {
+          if (experience.id !== selectedId) return experience
+          const hasItem = (experience.items || []).some((item) => item.id === itemId)
+          if (hasItem) {
+            return {
+              ...experience,
+              items: experience.items.map((item) =>
+                item.id === itemId ? { ...item, ...values } : item
+              ),
+            }
+          }
+          return {
+            ...experience,
+            ...values,
+          }
+        })
       )
       if (!commit) return
 
-      api(`/items/${itemId}/`, { method: 'PATCH', body: values })
+      const isRealItem = selected?.items?.some((item) => item.id === itemId)
+      const endpoint = isRealItem ? `/items/${itemId}/` : `/experiences/${selectedId}/`
+      api(endpoint, { method: 'PATCH', body: values })
         .then(() => setNotice('Transform saved.'))
         .catch((err) => setError(err.message))
     },
-    [selectedId]
+    [selectedId, selected]
   )
 
   const resetModelTransform = useCallback(() => {

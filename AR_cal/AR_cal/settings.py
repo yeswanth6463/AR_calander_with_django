@@ -19,7 +19,7 @@ SECRET_KEY = config(
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config("DEBUG", default=False, cast=bool)
+DEBUG = config("DEBUG", default=True, cast=bool)
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*", cast=Csv())
 
@@ -83,7 +83,7 @@ DATABASES = {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": config("POSTGRES_DB", default="ar_platform"),
         "USER": config("POSTGRES_USER", default="postgres"),
-        "PASSWORD": config("2802", default="2802"),
+        "PASSWORD": config("POSTGRES_PASSWORD", default="2802"),
         "HOST": config("POSTGRES_HOST", default="localhost"),
         "PORT": config("POSTGRES_PORT", default="5433"),
         "CONN_MAX_AGE": 60,
