@@ -2,11 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { ImageTracker } from '../ar/tracker'
+import { ImageTracker, extractFrame } from '../ar/tracker'
 import { poseFromHomography, smoothCorners } from '../ar/pose'
 import { createAnimationController } from '../ar/animation'
 import { createMediaPanel } from '../ar/mediaPanel'
-import AnimationPanel from '../components/AnimationPanel'
 import { api } from '../api'
 
 const rel = (url) => {
@@ -99,13 +98,8 @@ export default function Viewer() {
   const { publicId } = useParams()
   const videoRef = useRef(null)
   const glRef = useRef(null)
-  const animRef = useRef(null)
-  const mediaPanelRef = useRef(null)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('loading experience…')
-  const [trackState, setTrackState] = useState('idle')
-  const [fps, setFps] = useState(0)
-  const [animCtl, setAnimCtl] = useState(null)
 
   useEffect(() => {
     let disposed = false
@@ -122,10 +116,44 @@ export default function Viewer() {
         await waitForCv()
         if (disposed) return
 
-        setStatus('loading target image…')
-        const targetImg = await loadImage(rel(exp.target.image_url))
-        const tracker = new ImageTracker()
-        tracker.compile(targetImg)
+        // Scene content: prefer the multi-item payload, fall back to the
+        // legacy single target/model pair.
+        const items =
+          Array.isArray(exp.items) && exp.items.length
+            ? exp.items
+            : exp.target && exp.model
+              ? [{
+                  id: 'legacy',
+                  name: exp.name,
+                  target: exp.target,
+                  model: exp.model,
+                  transform: exp.transform,
+                }]
+              : []
+        if (!items.length) {
+          throw new Error('Experience has no target image or model.')
+        }
+
+        // One tracker + one anchor per distinct target image; items sharing a
+        // marker become siblings under the same anchor.
+        const groups = new Map()
+        for (const item of items) {
+          const key = item.target.image_url
+          if (!groups.has(key)) groups.set(key, { target: item.target, items: [] })
+          groups.get(key).items.push(item)
+        }
+
+        setStatus(
+          `loading ${groups.size} target image${groups.size > 1 ? 's' : ''}…`
+        )
+        for (const g of groups.values()) {
+          const targetImg = await loadImage(rel(g.target.image_url))
+          if (disposed) return
+          g.tracker = new ImageTracker()
+          g.tracker.compile(targetImg)
+          g.smooth = null
+          g.lastFound = 0
+        }
 
         setStatus('starting camera…')
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -157,7 +185,6 @@ export default function Viewer() {
 
         // Orientation / video-size changes: keep drawing-buffer aspect in sync
         // with the camera feed so the pose matrix matches the frame.
-        const trackSmooth = { corners: null }
         const syncVideoSize = () => {
           const vw = video.videoWidth
           const vh = video.videoHeight
@@ -167,7 +194,7 @@ export default function Viewer() {
             glCanvas.height = vh
             renderer.setSize(vw, vh, false)
             // Old smoothed corners are in pre-rotation frame coords — drop them.
-            trackSmooth.corners = null
+            for (const g of groups.values()) g.smooth = null
           }
           camera.aspect = vw / vh
           camera.updateProjectionMatrix()
@@ -178,106 +205,120 @@ export default function Viewer() {
         window.addEventListener('resize', syncVideoSize)
         syncVideoSize()
 
-        const anchor = new THREE.Object3D()
-        anchor.matrixAutoUpdate = false
-        anchor.visible = false
-        scene.add(anchor)
-
-        const targetAspect = tracker.targetH / tracker.targetW
-        const content = new THREE.Group()
-        content.position.set(0.5, -targetAspect / 2, 0)
-        content.scale.setScalar(exp.target.width)
-        anchor.add(content)
-
-        const fit = new THREE.Group()
-        content.add(fit)
-
-        const { transform } = exp
-        fit.position.set(...transform.position)
-        fit.rotation.set(
-          THREE.MathUtils.degToRad(transform.rotation[0]),
-          THREE.MathUtils.degToRad(transform.rotation[1]),
-          THREE.MathUtils.degToRad(transform.rotation[2])
-        )
-        fit.scale.set(...(transform.scale_xyz || Array(3).fill(transform.scale)))
-
-        if (['mp4', 'webm', 'gif'].includes(exp.model.format)) {
-          setStatus('loading animated media…')
-          const panel = await createMediaPanel(rel(exp.model.url), exp.model.format)
-          if (disposed) {
-            panel.dispose()
-            return
-          }
-          mediaPanelRef.current = panel
-          fit.add(panel.mesh)
-          setStatus('point your camera at the target image')
-        } else {
-          setStatus('loading 3D model…')
-          new GLTFLoader().load(rel(exp.model.url), (gltf) => {
-            const model = gltf.scene
-            const box = new THREE.Box3().setFromObject(model)
-            const size = box.getSize(new THREE.Vector3())
-            const center = box.getCenter(new THREE.Vector3())
-            const maxDim = Math.max(size.x, size.y, size.z) || 1
-            const s = 0.5 / maxDim
-            model.scale.setScalar(s)
-            model.position.sub(center.multiplyScalar(s))
-            fit.add(model)
-            if (!disposed && gltf.animations?.length) {
-              animRef.current?.dispose()
-              const ctl = createAnimationController(gltf)
-              if (exp.animation) ctl.applySettings(exp.animation)
-              else ctl.play()
-              animRef.current = ctl
-              setAnimCtl(ctl)
-            }
-            setStatus('point your camera at the target image')
-          }, undefined, () => {
-            setStatus('target ready — model failed to load (check format)')
-          })
+        const anims = []
+        const mediaPanels = []
+        let pendingModels = items.length
+        const doneOne = (message) => {
+          pendingModels--
+          if (pendingModels === 0 && !disposed) setStatus(message)
         }
 
-        let lastFound = 0
-        let frames = 0
-        let fpsClock = performance.now()
+        // Anchors: one per distinct target image.
+        for (const g of groups.values()) {
+          const anchor = new THREE.Object3D()
+          anchor.matrixAutoUpdate = false
+          anchor.visible = false
+          scene.add(anchor)
+          g.anchor = anchor
+
+          const targetAspect = g.tracker.targetH / g.tracker.targetW
+          const content = new THREE.Group()
+          content.position.set(0.5, -targetAspect / 2, 0)
+          content.scale.setScalar(g.target.width)
+          anchor.add(content)
+          g.content = content
+        }
+
+        // Content: each item gets its own fit group carrying its transform.
+        setStatus(
+          `loading ${items.length} model${items.length > 1 ? 's' : ''}…`
+        )
+        for (const item of items) {
+          const fit = new THREE.Group()
+          const transform = item.transform
+          fit.position.set(...transform.position)
+          fit.rotation.set(
+            THREE.MathUtils.degToRad(transform.rotation[0]),
+            THREE.MathUtils.degToRad(transform.rotation[1]),
+            THREE.MathUtils.degToRad(transform.rotation[2])
+          )
+          fit.scale.set(...(transform.scale_xyz || Array(3).fill(transform.scale)))
+          groups.get(item.target.image_url).content.add(fit)
+
+          if (['mp4', 'webm', 'gif'].includes(item.model.format)) {
+            createMediaPanel(rel(item.model.url), item.model.format)
+              .then((panel) => {
+                if (disposed) {
+                  panel.dispose()
+                  return
+                }
+                mediaPanels.push(panel)
+                fit.add(panel.mesh)
+                doneOne('point your camera at the target image')
+              })
+              .catch(() => doneOne('target ready — media failed to load'))
+          } else {
+            new GLTFLoader().load(rel(item.model.url), (gltf) => {
+              if (disposed) return
+              const model = gltf.scene
+              const box = new THREE.Box3().setFromObject(model)
+              const size = box.getSize(new THREE.Vector3())
+              const center = box.getCenter(new THREE.Vector3())
+              const maxDim = Math.max(size.x, size.y, size.z) || 1
+              const s = 0.5 / maxDim
+              model.scale.setScalar(s)
+              model.position.sub(center.multiplyScalar(s))
+              fit.add(model)
+              if (gltf.animations?.length) {
+                const ctl = createAnimationController(gltf)
+                if (item.animation) ctl.applySettings(item.animation)
+                else ctl.play()
+                anims.push(ctl)
+              }
+              doneOne('point your camera at the target image')
+            }, undefined, () => {
+              doneOne('target ready — model failed to load (check format)')
+            })
+          }
+        }
+
         let raf = 0
         const clock = new THREE.Clock()
 
         const loop = () => {
           raf = requestAnimationFrame(loop)
           const dt = clock.getDelta()
-          animRef.current?.update(dt)
-          mediaPanelRef.current?.update()
-          frames++
+          for (const ctl of anims) ctl.update(dt)
+          for (const panel of mediaPanels) panel.update()
           const now = performance.now()
-          if (now - fpsClock >= 1000) {
-            setFps(frames)
-            frames = 0
-            fpsClock = now
-          }
 
-          const r = tracker.track(video)
-          if (r.found) {
-            trackSmooth.corners = smoothCorners(trackSmooth.corners, r.corners, 0.4)
-            const m = poseFromCorners(
-              tracker.targetW,
-              tracker.targetH,
-              trackSmooth.corners,
-              glCanvas.width,
-              glCanvas.height,
-              60
-            )
-            if (m) {
-              anchor.matrix.fromArray(m)
-              anchor.matrixWorldNeedsUpdate = true
-              anchor.visible = true
-              lastFound = now
-              setTrackState('found')
+          // One ORB extraction per frame, matched against every marker.
+          const frame = extractFrame(video)
+          if (frame) {
+            for (const g of groups.values()) {
+              const r = g.tracker.matchFrame(frame)
+              if (r.found) {
+                g.smooth = smoothCorners(g.smooth, r.corners, 0.4)
+                const m = poseFromCorners(
+                  g.tracker.targetW,
+                  g.tracker.targetH,
+                  g.smooth,
+                  glCanvas.width,
+                  glCanvas.height,
+                  60
+                )
+                if (m) {
+                  g.anchor.matrix.fromArray(m)
+                  g.anchor.matrixWorldNeedsUpdate = true
+                  g.anchor.visible = true
+                  g.lastFound = now
+                }
+              } else if (now - g.lastFound > 300) {
+                g.smooth = null
+                g.anchor.visible = false
+              }
             }
-          } else if (now - lastFound > 300) {
-            trackSmooth.corners = null
-            anchor.visible = false
-            setTrackState(`lost (${r.reason})`)
+            frame.dispose()
           }
           renderer.render(scene, camera)
         }
@@ -285,10 +326,10 @@ export default function Viewer() {
 
         stop = () => {
           cancelAnimationFrame(raf)
-          animRef.current?.dispose()
-          animRef.current = null
-          mediaPanelRef.current?.dispose()
-          mediaPanelRef.current = null
+          for (const ctl of anims) ctl.dispose()
+          anims.length = 0
+          for (const panel of mediaPanels) panel.dispose()
+          mediaPanels.length = 0
           video.removeEventListener('resize', syncVideoSize)
           window.removeEventListener('resize', syncVideoSize)
           stream.getTracks().forEach((t) => t.stop())
@@ -316,15 +357,16 @@ export default function Viewer() {
       <video ref={videoRef} autoPlay muted playsInline />
       <canvas ref={glRef} className="gl" />
       <Link to="/" className="viewer-back">← AR Studio</Link>
-      <div className="viewer-hud">
-        <div>fps: {fps || '–'}</div>
-        <div>
-          tracking:{' '}
-          <span className={trackState === 'found' ? 'found' : 'lost'}>{trackState}</span>
+      {/* Only while loading or on error — clean view once ready. */}
+      {(error || status !== 'ready') && (
+        <div className="viewer-hud">
+          {error ? (
+            <div className="lost">{error}</div>
+          ) : (
+            <div className="muted">{status}</div>
+          )}
         </div>
-        {error ? <div className="lost">{error}</div> : status !== 'ready' && <div className="muted">{status}</div>}
-      </div>
-      {animCtl && <AnimationPanel controller={animCtl} />}
+      )}
     </div>
   )
 }

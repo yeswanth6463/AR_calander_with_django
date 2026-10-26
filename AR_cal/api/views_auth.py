@@ -17,7 +17,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ARExperience, PublishedExperience, User
+from .models import ARExperience, ExperienceItem, PublishedExperience, User
+from .serializer import _item_payload
 
 
 def user_payload(user):
@@ -100,15 +101,41 @@ def me(request):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 def publish_experience(request, experience_id):
     try:
-        experience = ARExperience.objects.get(
-            id=experience_id, project__user=request.user
-        )
+        experience = ARExperience.objects.select_related(
+            "target_image", "model_asset"
+        ).get(id=experience_id, project__user=request.user)
     except ARExperience.DoesNotExist:
         return Response({"error": "Experience not found."}, status=404)
 
-    if not experience.target_image or not experience.model_asset:
+    # Legacy single-pair experiences without a mirrored item yet: sync now.
+    if (
+        experience.target_image
+        and experience.model_asset
+        and not experience.items.exists()
+    ):
+        ExperienceItem.objects.create(
+            experience=experience,
+            target_image=experience.target_image,
+            model_asset=experience.model_asset,
+            name=experience.name,
+            order=0,
+            position_x=experience.position_x,
+            position_y=experience.position_y,
+            position_z=experience.position_z,
+            rotation_x=experience.rotation_x,
+            rotation_y=experience.rotation_y,
+            rotation_z=experience.rotation_z,
+            scale=experience.scale,
+            scale_x=experience.scale_x,
+            scale_y=experience.scale_y,
+            scale_z=experience.scale_z,
+        )
+
+    if not experience.items.exists() and not (
+        experience.target_image and experience.model_asset
+    ):
         return Response(
-            {"error": "Experience needs both a target image and a 3D model."},
+            {"error": "Experience needs at least one target image and 3D model."},
             status=400,
         )
 
@@ -201,6 +228,52 @@ def public_experience(request, public_id):
     target = exp.target_image
     asset = exp.model_asset
 
+    items = [
+        _item_payload(request, item)
+        for item in exp.items.select_related(
+            "target_image", "model_asset"
+        ).filter(is_active=True)
+    ]
+
+    if not items and target and asset:
+        # Legacy pair not mirrored into items yet — expose it as a one-item scene.
+        items = [_item_payload(request, exp)]
+
+    first = items[0] if items else None
+
+    # Legacy top-level keys: keep the original shape for already-published
+    # links; fall back to the first item for scenes authored without the
+    # legacy single pair.
+    top_target = target and {
+        "name": target.name,
+        "image_url": request.build_absolute_uri(target.image.url),
+        "width": target.target_width,
+    }
+    top_model = asset and {
+        "name": asset.name,
+        "url": request.build_absolute_uri(asset.model_file.url),
+        "format": asset.format,
+    }
+    if not top_target and first:
+        top_target = first["target"]
+    if not top_model and first:
+        top_model = first["model"]
+
+    if target and asset:
+        top_transform = {
+            "position": [exp.position_x, exp.position_y, exp.position_z],
+            "rotation": [exp.rotation_x, exp.rotation_y, exp.rotation_z],
+            "scale": exp.scale,
+            "scale_xyz": [exp.scale_x, exp.scale_y, exp.scale_z],
+        }
+    else:
+        top_transform = first["transform"] if first else {
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": 1.0,
+            "scale_xyz": [1.0, 1.0, 1.0],
+        }
+
     return Response(
         {
             "public_id": str(published.public_id),
@@ -209,21 +282,9 @@ def public_experience(request, public_id):
             "version": published.version,
             "published_at": published.published_at,
             "project": exp.project.name,
-            "target": {
-                "name": target.name,
-                "image_url": request.build_absolute_uri(target.image.url),
-                "width": target.target_width,
-            },
-            "model": {
-                "name": asset.name,
-                "url": request.build_absolute_uri(asset.model_file.url),
-                "format": asset.format,
-            },
-            "transform": {
-                "position": [exp.position_x, exp.position_y, exp.position_z],
-                "rotation": [exp.rotation_x, exp.rotation_y, exp.rotation_z],
-                "scale": exp.scale,
-                "scale_xyz": [exp.scale_x, exp.scale_y, exp.scale_z],
-            },
+            "target": top_target,
+            "model": top_model,
+            "transform": top_transform,
+            "items": items,
         }
     )

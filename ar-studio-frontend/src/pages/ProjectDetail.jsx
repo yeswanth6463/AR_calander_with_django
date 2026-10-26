@@ -23,6 +23,7 @@ export default function ProjectDetail() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [selectedId, setSelectedId] = useState(null)
+  const [selectedItemId, setSelectedItemId] = useState(null)
 
   const load = useCallback(async () => {
     try {
@@ -46,32 +47,57 @@ export default function ProjectDetail() {
   }, [load])
 
   const selected = experiences.find((e) => e.id === selectedId) || null
-  const previewTarget = useMemo(
-    () => targets.find((t) => t.id === selected?.target_image) || null,
-    [targets, selected]
+  const selectedItems = useMemo(() => selected?.items ?? [], [selected])
+  const selectedItem =
+    selectedItems.find((item) => item.id === selectedItemId) || null
+
+  // Keep a valid item of the active experience selected.
+  useEffect(() => {
+    if (selectedItems.length === 0) {
+      setSelectedItemId(null)
+      return
+    }
+    if (!selectedItems.some((item) => item.id === selectedItemId)) {
+      setSelectedItemId(selectedItems[0].id)
+    }
+  }, [selectedItems, selectedItemId])
+
+  // Scene shown in the viewport: every item with its target + model resolved.
+  const previewItems = useMemo(
+    () =>
+      selectedItems
+        .map((item) => ({
+          id: item.id,
+          target: targets.find((t) => t.id === item.target_image) || null,
+          asset: assets.find((a) => a.id === item.model_asset) || null,
+          transform: {
+            position: [item.position_x, item.position_y, item.position_z],
+            rotation: [item.rotation_x, item.rotation_y, item.rotation_z],
+            scale: [item.scale_x, item.scale_y, item.scale_z],
+          },
+        }))
+        .filter((item) => item.target && item.asset),
+    [selectedItems, targets, assets]
   )
-  const previewAsset = useMemo(
-    () => assets.find((a) => a.id === selected?.model_asset) || null,
-    [assets, selected]
-  )
-  const previewTransform = selected
-    ? {
-        position: [selected.position_x, selected.position_y, selected.position_z],
-        rotation: [selected.rotation_x, selected.rotation_y, selected.rotation_z],
-        scale: [selected.scale_x, selected.scale_y, selected.scale_z],
-      }
-    : null
 
   const updateTransform = useCallback(
-    (values, commit) => {
+    (itemId, values, commit) => {
+      if (!itemId) return
       setExperiences((current) =>
         current.map((experience) =>
-          experience.id === selectedId ? { ...experience, ...values } : experience
+          experience.id !== selectedId
+            ? experience
+            : {
+                ...experience,
+                items: (experience.items || []).map((item) =>
+                  item.id === itemId ? { ...item, ...values } : item
+                ),
+              }
         )
       )
-      if (!commit || !selectedId) return
+      if (!commit) return
 
-      api(`/experiences/${selectedId}/`, { method: 'PATCH', body: values })
+      api(`/items/${itemId}/`, { method: 'PATCH', body: values })
         .then(() => setNotice('Transform saved.'))
         .catch((err) => setError(err.message))
     },
@@ -91,8 +117,8 @@ export default function ProjectDetail() {
       scale_z: 1,
       scale: 1,
     }
-    updateTransform(defaultTransform, true)
-  }, [updateTransform])
+    updateTransform(selectedItemId, defaultTransform, true)
+  }, [updateTransform, selectedItemId])
 
   if (error && !project) return <div className="error-box">{error}</div>
   if (!project) return <p className="muted center">Loading…</p>
@@ -116,7 +142,7 @@ export default function ProjectDetail() {
             reload={load}
             onError={setError}
             onNotice={setNotice}
-            selectedId={selected?.target_image}
+            selectedId={selectedItem?.target_image}
           />
           <AssetsPanel
             projectId={id}
@@ -124,7 +150,7 @@ export default function ProjectDetail() {
             reload={load}
             onError={setError}
             onNotice={setNotice}
-            selectedId={selected?.model_asset}
+            selectedId={selectedItem?.model_asset}
           />
           {animationController && (
             <div className="panel-section animation-section">
@@ -148,15 +174,14 @@ export default function ProjectDetail() {
 
         <section className="panel viewport-panel">
           <PreviewViewport
-            target={previewTarget}
-            asset={previewAsset}
-            transform={previewTransform}
+            items={previewItems}
+            selectedItemId={selectedItemId}
             onAnimationController={setAnimationController}
             onTransformChange={updateTransform}
           />
           <div className="viewport-hint">
             {selected
-              ? `${selected.name || 'experience'} — drag to orbit · scroll to zoom`
+              ? `${selected.name || 'experience'} — ${previewItems.length} item${previewItems.length === 1 ? '' : 's'} · drag to orbit · scroll to zoom`
               : 'Select an experience in the Inspector →'}
           </div>
         </section>
@@ -168,7 +193,10 @@ export default function ProjectDetail() {
             assets={assets}
             experiences={experiences}
             selected={selected}
+            items={selectedItems}
+            selectedItemId={selectedItemId}
             onSelect={setSelectedId}
+            onSelectItem={setSelectedItemId}
             reload={load}
             onError={setError}
             onNotice={setNotice}
@@ -357,7 +385,10 @@ function InspectorPanel({
   assets,
   experiences,
   selected,
+  items,
+  selectedItemId,
   onSelect,
+  onSelectItem,
   reload,
   onError,
   onNotice,
@@ -369,6 +400,10 @@ function InspectorPanel({
   const [expName, setExpName] = useState('')
   const [busy, setBusy] = useState(false)
   const [slug, setSlug] = useState('')
+  const [itemTargetId, setItemTargetId] = useState('')
+  const [itemAssetId, setItemAssetId] = useState('')
+
+  const selectedItem = items.find((item) => item.id === selectedItemId) || null
 
   useEffect(() => {
     if (selected) {
@@ -377,6 +412,46 @@ function InspectorPanel({
       setSlug('')
     }
   }, [selected])
+
+  const addItem = async (e) => {
+    e.preventDefault()
+    if (!selected) return
+    setBusy(true)
+    onError('')
+    try {
+      const d = await api('/items/', {
+        method: 'POST',
+        body: {
+          experience: selected.id,
+          target_image: itemTargetId,
+          model_asset: itemAssetId,
+        },
+      })
+      onNotice('Item added to the scene.')
+      setItemTargetId('')
+      setItemAssetId('')
+      await reload()
+      onSelectItem?.(d.id)
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeItem = async (itemId) => {
+    if (!confirm('Remove this item from the scene?')) return
+    onError('')
+    try {
+      await api(`/items/${itemId}/`, { method: 'DELETE' })
+      onNotice('Item removed.')
+      const next = items.find((item) => item.id !== itemId)
+      onSelectItem?.(next ? next.id : null)
+      await reload()
+    } catch (err) {
+      onError(err.message)
+    }
+  }
 
   const create = async (e) => {
     e.preventDefault()
@@ -475,8 +550,9 @@ function InspectorPanel({
               <div className="grow">
                 <div className="name">{exp.name || 'Untitled'}</div>
                 <div className="muted tiny">
-                  {targets.find((t) => t.id === exp.target_image)?.name ?? '?'} →{' '}
-                  {assets.find((a) => a.id === exp.model_asset)?.name ?? '?'}
+                  {targets.find((t) => t.id === (exp.target_image ?? exp.items?.[0]?.target_image))?.name ?? '?'} →{' '}
+                  {assets.find((a) => a.id === (exp.model_asset ?? exp.items?.[0]?.model_asset))?.name ?? '?'}
+                  {exp.items?.length > 1 ? ` · ${exp.items.length} items` : ''}
                 </div>
               </div>
               <span className={`badge ${exp.status === 'published' ? 'ok' : 'warn'}`}>
@@ -488,6 +564,77 @@ function InspectorPanel({
       </div>
 
       {selected && (
+        <div className="panel-section">
+          <div className="panel-head"><h2>Scene items</h2></div>
+          <div className="asset-list">
+            {items.length === 0 && (
+              <p className="muted small-text">
+                No items yet — bind a target image + model below.
+              </p>
+            )}
+            {items.map((item) => (
+              <div
+                key={item.id}
+                className={`asset-item clickable ${selectedItemId === item.id ? 'active' : ''}`}
+                onClick={() => onSelectItem?.(item.id)}
+              >
+                <div className="grow">
+                  <div className="name">
+                    {targets.find((t) => t.id === item.target_image)?.name ?? '?'} →{' '}
+                    {assets.find((a) => a.id === item.model_asset)?.name ?? '?'}
+                  </div>
+                  <div className="muted tiny">
+                    {selectedItemId === item.id ? 'editing' : 'click to edit'}
+                  </div>
+                </div>
+                <div className="item-actions">
+                  <button
+                    className="btn ghost small"
+                    title="Remove item"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      removeItem(item.id)
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <form className="inspector-form" onSubmit={addItem}>
+            <div className="tiny muted">Add item (marker + model)</div>
+            <select
+              required
+              value={itemTargetId}
+              onChange={(e) => setItemTargetId(e.target.value)}
+            >
+              <option value="">choose target…</option>
+              {targets.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+            <select
+              required
+              value={itemAssetId}
+              onChange={(e) => setItemAssetId(e.target.value)}
+            >
+              <option value="">choose model or media…</option>
+              {assets.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+            <button
+              className="btn small"
+              disabled={busy || !itemTargetId || !itemAssetId}
+            >
+              + Add item
+            </button>
+          </form>
+        </div>
+      )}
+
+      {selectedItem && (
         <div className="panel-section transform-section">
           <div className="panel-head">
             <h2>Transform</h2>
@@ -509,29 +656,35 @@ function InspectorPanel({
           <TransformRow
             label="Position"
             fields={[
-              ['position_x', selected.position_x],
-              ['position_y', selected.position_y],
-              ['position_z', selected.position_z],
+              ['position_x', selectedItem.position_x],
+              ['position_y', selectedItem.position_y],
+              ['position_z', selectedItem.position_z],
             ]}
-            onChange={onTransformChange}
+            onChange={(values, commit) =>
+              onTransformChange(selectedItem.id, values, commit)
+            }
           />
           <TransformRow
             label="Rotation"
             fields={[
-              ['rotation_x', selected.rotation_x],
-              ['rotation_y', selected.rotation_y],
-              ['rotation_z', selected.rotation_z],
+              ['rotation_x', selectedItem.rotation_x],
+              ['rotation_y', selectedItem.rotation_y],
+              ['rotation_z', selectedItem.rotation_z],
             ]}
-            onChange={onTransformChange}
+            onChange={(values, commit) =>
+              onTransformChange(selectedItem.id, values, commit)
+            }
           />
           <TransformRow
             label="Scale"
             fields={[
-              ['scale_x', selected.scale_x],
-              ['scale_y', selected.scale_y],
-              ['scale_z', selected.scale_z],
+              ['scale_x', selectedItem.scale_x],
+              ['scale_y', selectedItem.scale_y],
+              ['scale_z', selectedItem.scale_z],
             ]}
-            onChange={onTransformChange}
+            onChange={(values, commit) =>
+              onTransformChange(selectedItem.id, values, commit)
+            }
           />
           <button
             type="button"

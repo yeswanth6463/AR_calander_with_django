@@ -7,6 +7,7 @@ from .views import (
     TargetImageViewSet,
     ModelAssetViewSet,
     ARExperienceViewSet,
+    ExperienceItemViewSet,
     register_target,
     track_image,
 )
@@ -26,6 +27,7 @@ router.register("projects", ProjectViewSet, basename="project")
 router.register("targets", TargetImageViewSet, basename="target")
 router.register("assets", ModelAssetViewSet, basename="asset")
 router.register("experiences", ARExperienceViewSet, basename="experience")
+router.register("items", ExperienceItemViewSet, basename="experience-item")
 
 urlpatterns = [
     path("", include(router.urls)),

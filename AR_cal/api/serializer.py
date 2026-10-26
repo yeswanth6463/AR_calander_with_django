@@ -1,7 +1,7 @@
 
 from rest_framework import serializers
 
-from .models import Project, TargetImage, ModelAsset, ARExperience
+from .models import Project, TargetImage, ModelAsset, ARExperience, ExperienceItem
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -69,8 +69,101 @@ class ModelAssetSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class ExperienceItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ExperienceItem
+        fields = [
+            "id", "experience", "target_image", "model_asset", "name",
+            "order", "is_active",
+            "position_x", "position_y", "position_z",
+            "rotation_x", "rotation_y", "rotation_z",
+            "scale", "scale_x", "scale_y", "scale_z",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "order", "created_at", "updated_at"]
+
+    def validate_experience(self, experience):
+        request = self.context.get("request")
+        if request and experience.project.user_id != request.user.id:
+            raise serializers.ValidationError(
+                "You do not own this experience."
+            )
+        return experience
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        if "scale" in attrs and not any(
+            key in attrs for key in ("scale_x", "scale_y", "scale_z")
+        ):
+            attrs["scale_x"] = attrs["scale"]
+            attrs["scale_y"] = attrs["scale"]
+            attrs["scale_z"] = attrs["scale"]
+
+        scales = {
+            axis: attrs.get(axis, getattr(self.instance, axis, 1.0))
+            for axis in ("scale_x", "scale_y", "scale_z")
+        }
+        if any(value <= 0 for value in scales.values()):
+            raise serializers.ValidationError(
+                {"scale": "Scale values must be greater than zero."}
+            )
+
+        attrs["scale"] = sum(scales.values()) / 3
+
+        experience = attrs.get(
+            "experience", getattr(self.instance, "experience", None)
+        )
+        project = experience.project if experience else None
+
+        target = attrs.get(
+            "target_image", getattr(self.instance, "target_image", None)
+        )
+        asset = attrs.get(
+            "model_asset", getattr(self.instance, "model_asset", None)
+        )
+
+        if project and target and target.project_id != project.id:
+            raise serializers.ValidationError(
+                {"target_image": "Target must belong to this project."}
+            )
+
+        if project and asset and asset.project_id != project.id:
+            raise serializers.ValidationError(
+                {"model_asset": "Model must belong to this project."}
+            )
+
+        return attrs
+
+
+def _item_payload(request, item):
+    target = item.target_image
+    asset = item.model_asset
+    return {
+        "id": str(item.id),
+        "name": item.name,
+        "target": {
+            "name": target.name,
+            "image_url": request.build_absolute_uri(target.image.url),
+            "width": target.target_width,
+        },
+        "model": {
+            "name": asset.name,
+            "url": request.build_absolute_uri(asset.model_file.url),
+            "format": asset.format,
+        },
+        "transform": {
+            "position": [item.position_x, item.position_y, item.position_z],
+            "rotation": [item.rotation_x, item.rotation_y, item.rotation_z],
+            "scale": item.scale,
+            "scale_xyz": [item.scale_x, item.scale_y, item.scale_z],
+        },
+    }
+
+
 class ARExperienceSerializer(serializers.ModelSerializer):
     published_slug = serializers.SerializerMethodField()
+    items = ExperienceItemSerializer(many=True, read_only=True)
 
     class Meta:
         model = ARExperience
@@ -79,6 +172,7 @@ class ARExperienceSerializer(serializers.ModelSerializer):
             "position_x", "position_y", "position_z",
             "rotation_x", "rotation_y", "rotation_z",
             "scale", "scale_x", "scale_y", "scale_z",
+            "items",
             "published_slug",
             "created_at", "updated_at",
         ]
@@ -138,3 +232,32 @@ class ARExperienceSerializer(serializers.ModelSerializer):
             )
 
         return attrs
+
+    def create(self, validated_data):
+        # Experiences created with the legacy single pair get a matching first
+        # item, so every experience is a (possibly one-element) scene.
+        legacy_target = validated_data.get("target_image")
+        legacy_asset = validated_data.get("model_asset")
+
+        experience = ARExperience.objects.create(**validated_data)
+
+        if legacy_target and legacy_asset and not experience.items.exists():
+            ExperienceItem.objects.create(
+                experience=experience,
+                target_image=legacy_target,
+                model_asset=legacy_asset,
+                name=experience.name,
+                order=0,
+                position_x=experience.position_x,
+                position_y=experience.position_y,
+                position_z=experience.position_z,
+                rotation_x=experience.rotation_x,
+                rotation_y=experience.rotation_y,
+                rotation_z=experience.rotation_z,
+                scale=experience.scale,
+                scale_x=experience.scale_x,
+                scale_y=experience.scale_y,
+                scale_z=experience.scale_z,
+            )
+
+        return experience

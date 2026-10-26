@@ -1,6 +1,52 @@
 export const createOrb = (nfeatures) =>
   cv.ORB_create ? cv.ORB_create(nfeatures) : new cv.ORB(nfeatures)
 
+// Shared work canvas for camera frames — one ORB extraction per frame is
+// reused by every tracker (multi-marker scenes extract once, match N times).
+const frameCanvas = document.createElement("canvas");
+frameCanvas.width = 640;
+
+export const extractFrame = (video, frameFeatures = 900) => {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return null;
+
+  const scale = Math.min(1, 640 / vw);
+  const w = Math.round(vw * scale);
+  const h = Math.round(vh * scale);
+  if (frameCanvas.width !== w || frameCanvas.height !== h) {
+    frameCanvas.width = w;
+    frameCanvas.height = h;
+  }
+
+  const ctx = frameCanvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(video, 0, 0, w, h);
+
+  const rgba = cv.imread(frameCanvas);
+  const gray = new cv.Mat();
+  cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
+  rgba.delete();
+
+  const orb = createOrb(frameFeatures);
+  const keypoints = new cv.KeyPointVector();
+  const descriptors = new cv.Mat();
+  orb.detectAndCompute(gray, new cv.Mat(), keypoints, descriptors);
+  gray.delete();
+  orb.delete();
+
+  return {
+    scale,
+    width: vw,
+    height: vh,
+    keypoints,
+    descriptors,
+    dispose() {
+      keypoints.delete();
+      descriptors.delete();
+    },
+  };
+};
+
 export class ImageTracker {
   constructor({ targetFeatures = 1500, frameFeatures = 900, ratio = 0.75, minMatches = 10 } = {}) {
     this.targetFeatures = targetFeatures;
@@ -54,7 +100,7 @@ export class ImageTracker {
     if (this.trainDesc) this.trainDesc.delete();
     this.trainDesc = desc;
     this.targetKeypoints = [];
-    for (let i = 0; i < kps.size(); i++) {
+    for (let i = 0; i < kps.size; i++) {
       const kp = kps.get(i);
       this.targetKeypoints.push({ x: kp.pt.x, y: kp.pt.y });
     }
@@ -62,33 +108,11 @@ export class ImageTracker {
     return { features: this.targetKeypoints.length, width: this.targetW, height: this.targetH };
   }
 
-  track(video) {
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    if (!vw || !vh || !this.ready) return { found: false, reason: "not ready" };
-
-    const scale = Math.min(1, 640 / vw);
-    const w = Math.round(vw * scale);
-    const h = Math.round(vh * scale);
-    if (this._work.width !== w || this._work.height !== h) {
-      this._work.width = w;
-      this._work.height = h;
-    }
-
-    const ctx = this._work.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(video, 0, 0, w, h);
-
-    const frame = cv.imread(this._work);
-    const gray = new cv.Mat();
-    cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
-    frame.delete();
-
-    const orb = createOrb(this.frameFeatures);
-    const kps = new cv.KeyPointVector();
-    const desc = new cv.Mat();
-    orb.detectAndCompute(gray, new cv.Mat(), kps, desc);
-    gray.delete();
-    orb.delete();
+  // Match one extracted frame against this tracker's target image.
+  // The caller owns `frame` and must dispose() it after all trackers are done.
+  matchFrame(frame) {
+    const { scale, width: vw, height: vh, keypoints: kps, descriptors: desc } = frame;
+    if (!this.ready) return { found: false, reason: "not ready" };
 
     let result = { found: false, reason: "no features in frame" };
 
@@ -176,8 +200,17 @@ export class ImageTracker {
       }
     }
 
-    desc.delete();
-    kps.delete();
     return result;
+  }
+
+  // Back-compat single-target path: extract + match in one call.
+  track(video) {
+    const frame = extractFrame(video, this.frameFeatures);
+    if (!frame) return { found: false, reason: "not ready" };
+    try {
+      return this.matchFrame(frame);
+    } finally {
+      frame.dispose();
+    }
   }
 }
