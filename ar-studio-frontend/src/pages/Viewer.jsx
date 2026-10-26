@@ -100,6 +100,8 @@ export default function Viewer() {
   const glRef = useRef(null)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('loading experience…')
+  const [isReady, setIsReady] = useState(false)
+  const [targetFound, setTargetFound] = useState(false)
 
   useEffect(() => {
     let disposed = false
@@ -210,7 +212,10 @@ export default function Viewer() {
         let pendingModels = items.length
         const doneOne = (message) => {
           pendingModels--
-          if (pendingModels === 0 && !disposed) setStatus(message)
+          if (pendingModels === 0 && !disposed) {
+            setStatus('ready')
+            setIsReady(true)
+          }
         }
 
         // Anchors: one per distinct target image.
@@ -283,6 +288,7 @@ export default function Viewer() {
         }
 
         let raf = 0
+        let lastTrackingState = false
         const clock = new THREE.Clock()
 
         const loop = () => {
@@ -294,6 +300,7 @@ export default function Viewer() {
 
           // One ORB extraction per frame, matched against every marker.
           const frame = extractFrame(video)
+          let anyFound = false
           if (frame) {
             for (const g of groups.values()) {
               const r = g.tracker.matchFrame(frame)
@@ -312,14 +319,23 @@ export default function Viewer() {
                   g.anchor.matrixWorldNeedsUpdate = true
                   g.anchor.visible = true
                   g.lastFound = now
+                  anyFound = true
                 }
               } else if (now - g.lastFound > 300) {
                 g.smooth = null
                 g.anchor.visible = false
+              } else {
+                anyFound = true
               }
             }
             frame.dispose()
           }
+
+          if (anyFound !== lastTrackingState) {
+            lastTrackingState = anyFound
+            if (!disposed) setTargetFound(anyFound)
+          }
+
           renderer.render(scene, camera)
         }
         loop()
@@ -339,7 +355,10 @@ export default function Viewer() {
             if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose?.())
           })
         }
-        setStatus('ready')
+        if (pendingModels === 0) {
+          setStatus('ready')
+          setIsReady(true)
+        }
       } catch (err) {
         if (!disposed) setError(err.message)
       }
@@ -354,11 +373,26 @@ export default function Viewer() {
 
   return (
     <div className="viewer-root">
-      <video ref={videoRef} autoPlay muted playsInline />
+      <video ref={videoRef} className="viewer-camera" autoPlay muted playsInline />
       <canvas ref={glRef} className="gl" />
       <Link to="/" className="viewer-back">← AR Studio</Link>
-      {/* Only while loading or on error — clean view once ready. */}
-      {(error || status !== 'ready') && (
+
+      {/* AR Scanner - only the scanner video */}
+      {isReady && !error && (
+        <div className={`ar-scanner-wrap ${targetFound ? 'tracked' : ''}`}>
+          <video
+            src="/images/scan.mp4"
+            className="ar-scanner-video"
+            autoPlay
+            loop
+            muted
+            playsInline
+          />
+        </div>
+      )}
+
+      {/* Status HUD in top-right: only during loading or on error */}
+      {(error || !isReady) && (
         <div className="viewer-hud">
           {error ? (
             <div className="lost">{error}</div>
