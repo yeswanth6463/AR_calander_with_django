@@ -159,7 +159,7 @@ html:has(.viewer-root), body:has(.viewer-root) {
   overscroll-behavior: none;
 }
 body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
-.viewer-root video, .viewer-root canvas.gl {
+.viewer-root video.viewer-camera, .viewer-root canvas.gl {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -178,8 +178,9 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
   font-family: ui-monospace, monospace;
   font-size: 12px;
   max-width: 60vw;
+  z-index: 4;
 }
-.viewer-hud .found { color: var(--ok); }
+.viewer-hud .found { color: var(--ok); font-weight: 600; }
 .viewer-hud .lost { color: var(--warn); }
 .viewer-back {
   position: absolute;
@@ -189,9 +190,47 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
   color: #fff;
   padding: 8px 12px;
   border-radius: 8px;
-  z-index: 2;
+  z-index: 12;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+.viewer-back:hover {
+  background: rgba(20, 25, 38, 0.9);
+  text-decoration: none;
 }
 .error-box { color: var(--warn); padding: 20px; text-align: center; }
+
+/* ---------- AR Camera Scanner (scan.mp4) ---------- */
+
+.ar-scanner-wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 10;
+  transition: opacity 0.4s ease, transform 0.4s ease, visibility 0.4s;
+  opacity: 1;
+  transform: scale(1);
+  visibility: visible;
+}
+
+.ar-scanner-wrap.tracked {
+  opacity: 0;
+  transform: scale(0.92);
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.ar-scanner-wrap video.ar-scanner-video {
+  width: min(75vw, 280px);
+  height: min(75vw, 280px);
+  object-fit: contain;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.45));
+}
 
 /* ---------- Animation transport (Blender/Unity-style) ---------- */
 
@@ -665,7 +704,7 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
 
 .viewport { position: relative; flex: 1; min-height: 0; }
 .viewport-canvas { position: absolute; inset: 0; }
-.viewport canvas { display: block; }
+.viewport canvas { display: block; touch-action: none; }
 /* ==========================================================================
    Unity-Style Gizmo Tools Palette
    ========================================================================== */

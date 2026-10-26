@@ -487,9 +487,13 @@ export default function PreviewViewport({
       renderer.setSize(w, h)
     }
     window.addEventListener('resize', onResize)
+    const resizeObserver = new ResizeObserver(onResize)
+    resizeObserver.observe(mount)
+    onResize()
 
     return () => {
       cancelAnimationFrame(raf)
+      resizeObserver.disconnect()
       for (const ctl of animCtlsRef.current.values()) ctl.dispose()
       animCtlsRef.current.clear()
       for (const panel of mediaPanelsRef.current.values()) panel.dispose()
@@ -653,6 +657,7 @@ export default function PreviewViewport({
       }
       hideScale()
       if (rg) {
+        rg.setSize?.(gizmoSize)
         rg.setOrientation(rectOrientation)
         rg.setUniversal(false)
         rg.setVisible(true)
@@ -918,6 +923,9 @@ export default function PreviewViewport({
   useEffect(() => {
     if (rectGizmoRef.current?.isDragging?.()) return
     applyTransforms()
+    if (transformModeRef.current === 'rect') {
+      rectGizmoRef.current?.invalidateBounds?.()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items])
 
