@@ -163,7 +163,7 @@ def _item_payload(request, item):
 
 class ARExperienceSerializer(serializers.ModelSerializer):
     published_slug = serializers.SerializerMethodField()
-    items = ExperienceItemSerializer(many=True, read_only=True)
+    items = serializers.SerializerMethodField()
 
     class Meta:
         model = ARExperience
@@ -177,6 +177,31 @@ class ARExperienceSerializer(serializers.ModelSerializer):
             "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at", "published_slug"]
+
+    def get_items(self, obj):
+        items = list(obj.items.all())
+        if not items and obj.target_image_id and obj.model_asset_id:
+            item, _ = ExperienceItem.objects.get_or_create(
+                experience=obj,
+                target_image_id=obj.target_image_id,
+                model_asset_id=obj.model_asset_id,
+                defaults={
+                    "name": obj.name or getattr(obj.model_asset, "name", ""),
+                    "order": 0,
+                    "position_x": obj.position_x,
+                    "position_y": obj.position_y,
+                    "position_z": obj.position_z,
+                    "rotation_x": obj.rotation_x,
+                    "rotation_y": obj.rotation_y,
+                    "rotation_z": obj.rotation_z,
+                    "scale": obj.scale,
+                    "scale_x": obj.scale_x,
+                    "scale_y": obj.scale_y,
+                    "scale_z": obj.scale_z,
+                },
+            )
+            items = [item]
+        return ExperienceItemSerializer(items, many=True, context=self.context).data
 
     def get_published_slug(self, obj):
         published = getattr(obj, "published_experience", None)
