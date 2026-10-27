@@ -166,7 +166,8 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
   height: 100%;
   object-fit: cover;
 }
-.viewer-root canvas.gl { pointer-events: none; }
+.viewer-root video.viewer-camera { z-index: 0; }
+.viewer-root canvas.gl { pointer-events: none; z-index: 1; }
 /* Top-right: bottom-center is reserved for the animation panel. */
 .viewer-hud {
   position: absolute;
@@ -198,9 +199,130 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
   background: rgba(20, 25, 38, 0.9);
   text-decoration: none;
 }
+.viewer-hint-pill {
+  position: absolute;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(12, 15, 24, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #f0f4fc;
+  padding: 8px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 12;
+  white-space: nowrap;
+}
+.hint-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 8px #38bdf8;
+  animation: pulse-hint 1.4s ease-in-out infinite;
+}
+@keyframes pulse-hint {
+  0%, 100% { opacity: 0.4; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
 .error-box { color: var(--warn); padding: 20px; text-align: center; }
 
-/* ---------- AR Camera Scanner (scan.mp4) ---------- */
+.viewer-error-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 12, 18, 0.92);
+  backdrop-filter: blur(12px);
+  z-index: 20;
+  padding: 24px;
+}
+.viewer-error-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 28px 24px;
+  border-radius: 14px;
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+}
+.viewer-error-card .error-icon { font-size: 36px; margin-bottom: 12px; }
+.viewer-error-card h2 { font-size: 18px; margin: 0 0 8px; color: var(--text); }
+.viewer-error-card p { font-size: 14px; color: var(--muted); margin: 0 0 6px; }
+
+/* ---------- Target Found Alert ---------- */
+
+.viewer-found-alert {
+  position: absolute;
+  top: max(24px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  pointer-events: none;
+  animation: found-pop 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+.found-alert-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(14, 22, 36, 0.92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 20px rgba(56, 189, 248, 0.3);
+  padding: 10px 22px;
+  border-radius: 999px;
+  color: #fff;
+}
+
+.found-alert-icon {
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.found-alert-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.found-alert-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #38bdf8;
+  letter-spacing: 0.02em;
+}
+
+.found-alert-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+@keyframes found-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -20px) scale(0.85);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+/* ---------- AR Camera Scanner (scanner.gif) ---------- */
 
 .ar-scanner-wrap {
   position: absolute;
@@ -223,12 +345,14 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
   visibility: hidden;
 }
 
-.ar-scanner-wrap video.ar-scanner-video {
+.ar-scanner-wrap video.ar-scanner-video,
+.ar-scanner-wrap img.ar-scanner-img {
   width: min(75vw, 280px);
   height: min(75vw, 280px);
   object-fit: contain;
-  mix-blend-mode: screen;
   pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
   filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.45));
 }
 
@@ -1283,3 +1407,47 @@ html[data-theme='light'] .viewport-badge {
   border: 1px solid #cbd5e1;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
 }
+
+/* Floating animation toggle button in AR Viewer */
+.viewer-anim-toggle {
+  position: absolute;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  right: max(16px, env(safe-area-inset-right));
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 16px;
+  background: rgba(14, 22, 36, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  color: #f1f5f9;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 14;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.viewer-anim-toggle:hover {
+  background: rgba(24, 34, 54, 0.96);
+  border-color: var(--accent);
+  color: #fff;
+  transform: scale(1.04);
+}
+
+.viewer-anim-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 20px rgba(59, 110, 245, 0.5);
+}
+
+.viewer-anim-toggle .anim-toggle-icon {
+  font-size: 15px;
+}
+

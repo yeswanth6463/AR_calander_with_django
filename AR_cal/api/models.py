@@ -231,6 +231,11 @@ class ExperienceItem(models.Model):
     scale_x = models.FloatField(default=1.0)
     scale_y = models.FloatField(default=1.0)
     scale_z = models.FloatField(default=1.0)
+    animation = models.JSONField(
+        blank=True,
+        null=True,
+        help_text="Playback settings: clips, loop, speed, autoplay.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -285,6 +290,12 @@ class PublishedExperience(models.Model):
     version = models.PositiveIntegerField(default=1)
 
     is_active = models.BooleanField(default=True)
+
+    scene_snapshot = models.JSONField(
+        blank=True,
+        null=True,
+        help_text="Frozen public scene (items, transforms, assets) captured at publish time.",
+    )
 
     published_at = models.DateTimeField(auto_now_add=True)
 
