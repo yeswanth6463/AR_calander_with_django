@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 import AnimationPanel from '../components/AnimationPanel'
@@ -107,14 +107,23 @@ export default function ProjectDetail() {
             rotation: [item.rotation_x, item.rotation_y, item.rotation_z],
             scale: [item.scale_x, item.scale_y, item.scale_z],
           },
+          animation: item.animation || null,
         }))
         .filter((item) => item.target && item.asset),
     [selectedItems, targets, assets]
   )
 
+  const experiencesRef = useRef(experiences)
+  const draftRef = useRef(new Map())
+  useEffect(() => {
+    experiencesRef.current = experiences
+  }, [experiences])
+
   const updateTransform = useCallback(
     (itemId, values, commit) => {
       if (!itemId) return
+      const prev = draftRef.current.get(itemId) || {}
+      draftRef.current.set(itemId, { ...prev, ...values })
       setExperiences((current) =>
         current.map((experience) => {
           if (experience.id !== selectedId) return experience
@@ -135,14 +144,54 @@ export default function ProjectDetail() {
       )
       if (!commit) return
 
-      const isRealItem = selected?.items?.some((item) => item.id === itemId)
+      const exp = experiencesRef.current.find((e) => e.id === selectedId)
+      const isRealItem = (exp?.items || []).some((item) => item.id === itemId)
       const endpoint = isRealItem ? `/items/${itemId}/` : `/experiences/${selectedId}/`
       api(endpoint, { method: 'PATCH', body: values })
-        .then(() => setNotice('Transform saved.'))
+        .then(() => setNotice(values.animation ? 'Animation saved.' : 'Transform saved.'))
         .catch((err) => setError(err.message))
     },
-    [selectedId, selected]
+    [selectedId]
   )
+
+  const flushTransforms = useCallback(async () => {
+    const exp = experiencesRef.current.find((e) => e.id === selectedId)
+    const rows = exp?.items || []
+    await Promise.all(
+      rows.map((item) => {
+        const draft = draftRef.current.get(item.id) || {}
+        const merged = { ...item, ...draft }
+        return api(`/items/${item.id}/`, {
+          method: 'PATCH',
+          body: {
+            position_x: merged.position_x,
+            position_y: merged.position_y,
+            position_z: merged.position_z,
+            rotation_x: merged.rotation_x,
+            rotation_y: merged.rotation_y,
+            rotation_z: merged.rotation_z,
+            scale: merged.scale,
+            scale_x: merged.scale_x,
+            scale_y: merged.scale_y,
+            scale_z: merged.scale_z,
+            animation: merged.animation || null,
+            is_active: merged.is_active !== false,
+          },
+        })
+      })
+    )
+  }, [selectedId])
+
+  useEffect(() => {
+    if (!animationController?.subscribeConfig || !selectedItemId) return
+    let last = JSON.stringify(animationController.getConfig?.() || {})
+    return animationController.subscribeConfig((cfg) => {
+      const serialized = JSON.stringify(cfg)
+      if (serialized === last) return
+      last = serialized
+      updateTransform(selectedItemId, { animation: cfg }, true)
+    })
+  }, [animationController, selectedItemId, updateTransform])
 
   const resetModelTransform = useCallback(() => {
     const defaultTransform = {
@@ -242,6 +291,8 @@ export default function ProjectDetail() {
             onNotice={setNotice}
             onTransformChange={updateTransform}
             onResetTransform={resetModelTransform}
+            onFlushTransforms={flushTransforms}
+            sceneItemCount={selectedItems.length}
           />
         </aside>
       </div>
@@ -434,6 +485,8 @@ function InspectorPanel({
   onNotice,
   onTransformChange,
   onResetTransform,
+  onFlushTransforms,
+  sceneItemCount = 0,
 }) {
   const [targetId, setTargetId] = useState('')
   const [assetId, setAssetId] = useState('')
@@ -525,13 +578,15 @@ function InspectorPanel({
     setBusy(true)
     onError('')
     try {
+      if (onFlushTransforms) await onFlushTransforms()
       const body = slug.trim() ? { slug: slug.trim().toLowerCase() } : {}
       const d = await api(`/experiences/${selected.id}/publish/`, {
         method: 'POST',
         body,
       })
       setSlug(d.slug || slug)
-      onNotice(`Published → ${d.url}`)
+      const n = d.item_count ?? sceneItemCount
+      onNotice(`Published ${n} scene item${n === 1 ? '' : 's'} → ${d.url}`)
       await reload()
     } catch (err) {
       onError(err.message)
@@ -741,6 +796,10 @@ function InspectorPanel({
         <div className="panel-section">
           <div className="panel-head"><h2>Publish</h2></div>
           <div className="inspector-form">
+            <div className="tiny muted">
+              One public link for this experience, including all {sceneItemCount} scene
+              item{sceneItemCount === 1 ? '' : 's'}.
+            </div>
             <div className="tiny muted">Custom link name</div>
             <input
               placeholder="e.g. my-drone-demo"

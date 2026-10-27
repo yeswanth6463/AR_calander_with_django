@@ -17,7 +17,7 @@ export function createRectGizmo({
   orbitControls,
 }) {
   const gizmoGroup = new THREE.Group()
-  
+
   gizmoGroup.name = 'RectGizmoGroup'
   gizmoGroup.visible = false
   scene.add(gizmoGroup)
@@ -56,7 +56,7 @@ export function createRectGizmo({
   })
   const frameLine = new THREE.LineLoop(lineGeo, lineMat)
   frameLine.renderOrder = 9998
-  frameLine.raycast = () => {}
+  frameLine.raycast = () => { }
   frameLine.frustumCulled = false
   gizmoGroup.add(frameLine)
 
@@ -74,7 +74,7 @@ export function createRectGizmo({
   })
   const planeFillMesh = new THREE.Mesh(planeFillGeo, planeFillMat)
   planeFillMesh.renderOrder = 9996
-  planeFillMesh.raycast = () => {}
+  planeFillMesh.raycast = () => { }
   planeFillMesh.frustumCulled = false
   gizmoGroup.add(planeFillMesh)
 
@@ -84,7 +84,7 @@ export function createRectGizmo({
   const edgeInnerGeo = new THREE.BoxGeometry(0.12, 0.4, 0.1)
 
   const skipRaycast = (obj) => {
-    obj.raycast = () => {}
+    obj.raycast = () => { }
     obj.frustumCulled = false
   }
 

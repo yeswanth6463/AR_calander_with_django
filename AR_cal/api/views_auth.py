@@ -18,7 +18,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import ARExperience, ExperienceItem, PublishedExperience, User
-from .serializer import _item_payload
+from .serializer import _item_payload, build_scene_snapshot
 
 
 def user_payload(user):
@@ -162,6 +162,7 @@ def publish_experience(request, experience_id):
     if not created:
         published.version += 1
         published.is_active = True
+    published.scene_snapshot = build_scene_snapshot(request, experience)
     published.save()
 
     experience.status = "published"
@@ -173,6 +174,7 @@ def publish_experience(request, experience_id):
             "public_id": str(published.public_id),
             "slug": published.slug,
             "version": published.version,
+            "item_count": len((published.scene_snapshot or {}).get("items") or []),
             "url": f"/view/{link}",
         },
         status=201 if created else 200,
@@ -228,16 +230,24 @@ def public_experience(request, public_id):
     target = exp.target_image
     asset = exp.model_asset
 
-    items = [
-        _item_payload(request, item)
-        for item in exp.items.select_related(
-            "target_image", "model_asset"
-        ).filter(is_active=True)
-    ]
+    snapshot = published.scene_snapshot if isinstance(published.scene_snapshot, dict) else None
+    items = list((snapshot or {}).get("items") or [])
+    if not items:
+        items = [
+            payload
+            for payload in (
+                _item_payload(request, item)
+                for item in exp.items.select_related(
+                    "target_image", "model_asset"
+                ).filter(is_active=True)
+            )
+            if payload
+        ]
 
     if not items and target and asset:
         # Legacy pair not mirrored into items yet — expose it as a one-item scene.
-        items = [_item_payload(request, exp)]
+        legacy = _item_payload(request, exp)
+        items = [legacy] if legacy else []
 
     first = items[0] if items else None
 
@@ -285,6 +295,7 @@ def public_experience(request, public_id):
             "target": top_target,
             "model": top_model,
             "transform": top_transform,
+            "item_count": len(items),
             "items": items,
         }
     )

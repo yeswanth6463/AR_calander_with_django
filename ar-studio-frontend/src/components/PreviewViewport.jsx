@@ -881,7 +881,8 @@ export default function PreviewViewport({
             rectGizmoRef.current?.invalidateBounds?.()
             if (gltf.animations?.length) {
               const ctl = createAnimationController(gltf)
-              ctl.play()
+              if (entry.animation) ctl.applySettings(entry.animation)
+              else ctl.play()
               animCtlsRef.current.set(entry.id, ctl)
               if (selectedItemIdRef.current === entry.id) {
                 onAnimationControllerRef.current?.(ctl)

@@ -78,6 +78,7 @@ class ExperienceItemSerializer(serializers.ModelSerializer):
             "position_x", "position_y", "position_z",
             "rotation_x", "rotation_y", "rotation_z",
             "scale", "scale_x", "scale_y", "scale_z",
+            "animation",
             "created_at", "updated_at",
         ]
         read_only_fields = ["id", "order", "created_at", "updated_at"]
@@ -139,15 +140,20 @@ class ExperienceItemSerializer(serializers.ModelSerializer):
 def _item_payload(request, item):
     target = item.target_image
     asset = item.model_asset
+    if not target or not asset:
+        return None
     return {
         "id": str(item.id),
         "name": item.name,
+        "is_active": getattr(item, "is_active", True),
         "target": {
+            "id": str(target.id),
             "name": target.name,
             "image_url": request.build_absolute_uri(target.image.url),
             "width": target.target_width,
         },
         "model": {
+            "id": str(asset.id),
             "name": asset.name,
             "url": request.build_absolute_uri(asset.model_file.url),
             "format": asset.format,
@@ -158,6 +164,23 @@ def _item_payload(request, item):
             "scale": item.scale,
             "scale_xyz": [item.scale_x, item.scale_y, item.scale_z],
         },
+        "animation": getattr(item, "animation", None),
+    }
+
+
+def build_scene_snapshot(request, experience):
+    rows = list(
+        experience.items.select_related("target_image", "model_asset").filter(is_active=True)
+    )
+    payloads = [p for p in (_item_payload(request, item) for item in rows) if p]
+    if not payloads and experience.target_image_id and experience.model_asset_id:
+        legacy = _item_payload(request, experience)
+        if legacy:
+            payloads = [legacy]
+    return {
+        "name": experience.name,
+        "item_count": len(payloads),
+        "items": payloads,
     }
 
 
