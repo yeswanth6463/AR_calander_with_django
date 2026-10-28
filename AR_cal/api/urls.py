@@ -18,6 +18,7 @@ from .views_auth import (
     me,
     public_experience,
     publish_experience,
+    publish_project,
     register,
     unpublish_experience,
 )
@@ -30,6 +31,11 @@ router.register("experiences", ARExperienceViewSet, basename="experience")
 router.register("items", ExperienceItemViewSet, basename="experience-item")
 
 urlpatterns = [
+    path(
+        "projects/<uuid:project_id>/publish/",
+        publish_project,
+        name="project-publish",
+    ),
     path("", include(router.urls)),
     path(
         "targets/<uuid:target_id>/register/",

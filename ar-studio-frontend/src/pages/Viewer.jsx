@@ -12,8 +12,13 @@ import {
   getTrackerDiagnostics,
   TRACK_CONFIG,
 } from '../ar/tracker'
-import { poseFromHomography, readHomography, poseTranslation, smoothCorners } from '../ar/pose'
-import { attachContentToTargetAnchor, applyARItemTransform } from '../ar/sceneTransform'
+import {
+  poseFromHomography,
+  poseTranslation,
+  smoothCorners,
+  getQuadHomography,
+} from '../ar/pose'
+import { attachContentToTargetAnchor, applyARItemTransform, fitModelToMarker } from '../ar/sceneTransform'
 import { createAnimationController } from '../ar/animation'
 import { createMediaPanel } from '../ar/mediaPanel'
 import AnimationPanel from '../components/AnimationPanel'
@@ -170,25 +175,10 @@ const renderDebug = () => {
   }
 }
 
-// Exact 4-point homography from target corners → (smoothed) frame corners, so
-// the pose actually benefits from corner smoothing instead of raw H jitter.
+// Closed-form 4-point homography from target corners → (smoothed) frame corners.
+// Bypasses OpenCV matrix allocations for instant computation with zero GC pauses.
 const poseFromCorners = (targetW, targetH, corners, frameW, frameH, fovDeg) => {
-  const tw = Math.max(targetW - 1, 1)
-  const th = Math.max(targetH - 1, 1)
-  const src = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th])
-  const dst = cv.matFromArray(
-    4,
-    1,
-    cv.CV_32FC2,
-    [corners[0][0], corners[0][1], corners[1][0], corners[1][1],
-     corners[2][0], corners[2][1], corners[3][0], corners[3][1]]
-  )
-  const H = cv.findHomography(src, dst, 0)
-  src.delete()
-  dst.delete()
-  if (!H) return null
-  const arr = readHomography(H)
-  H.delete()
+  const arr = getQuadHomography(targetW, targetH, corners)
   if (!arr) return null
   return poseFromHomography(arr, frameW, frameH, fovDeg, targetW)
 }
@@ -228,21 +218,31 @@ export default function Viewer() {
         await waitForCv()
         if (disposed) return
 
-        // Scene content: prefer the multi-item payload, fall back to the
-        // legacy single target/model pair.
-        const items = (
-          Array.isArray(exp.items) && exp.items.length
-            ? exp.items
-            : exp.target && exp.model
-              ? [{
-                  id: 'legacy',
-                  name: exp.name,
-                  target: exp.target,
-                  model: exp.model,
-                  transform: exp.transform,
-                }]
-              : []
-        ).filter((item) => item?.target?.image_url && item?.model?.url && item.is_active !== false)
+        let sourceItems = []
+        if (Array.isArray(exp.scenes) && exp.scenes.length) {
+          for (const s of exp.scenes) {
+            if (Array.isArray(s.items)) {
+              sourceItems.push(...s.items)
+            }
+          }
+        }
+        if (!sourceItems.length && Array.isArray(exp.items) && exp.items.length) {
+          sourceItems = exp.items
+        }
+        if (!sourceItems.length && exp.target && exp.model) {
+          sourceItems = [
+            {
+              id: 'legacy',
+              name: exp.name,
+              target: exp.target,
+              model: exp.model,
+              transform: exp.transform,
+            },
+          ]
+        }
+        const items = sourceItems.filter(
+          (item) => item?.target?.image_url && item?.model?.url && item.is_active !== false
+        )
         if (!items.length) {
           throw new Error('Experience has no target image or model.')
         }
@@ -307,6 +307,24 @@ export default function Viewer() {
         fill.position.set(-0.6, -0.2, 0.4)
         camera.add(fill)
 
+        const applyCoverLayout = (el, vw, vh) => {
+          const root = el?.parentElement
+          if (!root || !vw || !vh) return
+          const cw = root.clientWidth
+          const ch = root.clientHeight
+          const scale = Math.max(cw / vw, ch / vh)
+          const w = vw * scale
+          const h = vh * scale
+          el.style.position = 'absolute'
+          el.style.width = `${w}px`
+          el.style.height = `${h}px`
+          el.style.left = `${(cw - w) / 2}px`
+          el.style.top = `${(ch - h) / 2}px`
+          el.style.right = 'auto'
+          el.style.bottom = 'auto'
+          el.style.objectFit = 'fill'
+        }
+
         // Orientation / video-size changes: keep drawing-buffer aspect in sync
         // with the camera feed so the pose matrix matches the frame.
         const syncVideoSize = () => {
@@ -322,6 +340,8 @@ export default function Viewer() {
           }
           camera.aspect = vw / vh
           camera.updateProjectionMatrix()
+          applyCoverLayout(video, vw, vh)
+          applyCoverLayout(glCanvas, vw, vh)
         }
         // `resize` fires on the video element when videoWidth/Height change
         // (e.g. orientation change); loadedmetadata has already fired by now.
@@ -384,29 +404,6 @@ export default function Viewer() {
             )
           }
           return gltfCache.get(url)
-        }
-        const fitModelToMarker = (root) => {
-          root.updateMatrixWorld(true)
-          const box = new THREE.Box3().setFromObject(root)
-          const size = box.getSize(new THREE.Vector3())
-          const maxDim = Math.max(size.x, size.y, size.z) || 1
-          const s = 0.5 / maxDim
-          root.scale.setScalar(s)
-          const box2 = new THREE.Box3().setFromObject(root)
-          const c = box2.getCenter(new THREE.Vector3())
-          root.position.set(-c.x, -box2.min.y, -c.z)
-          root.traverse((obj) => {
-            if (!obj.isMesh) return
-            obj.frustumCulled = false
-            const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
-            mats.forEach((mat) => {
-              if (!mat) return
-              mat.depthTest = true
-              mat.depthWrite = mat.transparent ? false : mat.depthWrite !== false
-              mat.needsUpdate = true
-            })
-          })
-          return size
         }
 
         // Content: each item gets its own fit group carrying its transform.
@@ -636,7 +633,7 @@ export default function Viewer() {
             )
             const lockedSet = new Set(locked)
 
-            if (locked.length === 1) {
+            if (groups.size === 1 && locked.length === 1) {
               const roi = paddedRoiFromCorners(
                 locked[0].smooth,
                 video.videoWidth,
@@ -647,13 +644,6 @@ export default function Viewer() {
                 const r = frame && locked[0].tracker.matchFrame(frame, { locked: true })
                 if (r?.found && applyDetection(locked[0], r, now)) {
                   anyFound = true
-                  for (const g of groups.values()) {
-                    if (g === locked[0]) continue
-                    if (now - g.lastFound > LOSS_GRACE_MS) {
-                      g.smooth = null
-                      g.anchor.visible = false
-                    } else if (g.anchor.visible) anyFound = true
-                  }
                 } else {
                   frame?.dispose()
                   frame = extractFrame(video)

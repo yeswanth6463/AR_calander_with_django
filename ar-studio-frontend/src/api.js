@@ -31,6 +31,27 @@ export async function api(path, { method = 'GET', body, formData } = {}) {
     credentials: 'include',
   })
 
+  if (res.status === 403 && method !== 'GET') {
+    document.cookie = 'csrftoken=; Max-Age=0; path=/'
+    headers['X-CSRFToken'] = (await ensureCsrf()) || ''
+    const retry = await fetch(`/api${path}`, {
+      method,
+      headers,
+      body: payload,
+      credentials: 'include',
+    })
+    if (retry.ok || retry.status !== 403) {
+      const retryData = retry.status === 204 ? null : await retry.json().catch(() => null)
+      if (!retry.ok) {
+        const detail =
+          (retryData && (retryData.error || retryData.detail)) ||
+          `Request failed (${retry.status})`
+        throw new Error(detail)
+      }
+      return retryData
+    }
+  }
+
   const data = res.status === 204 ? null : await res.json().catch(() => null)
   if (!res.ok) {
     const detail =

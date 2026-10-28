@@ -2,12 +2,6 @@ import * as THREE from 'three'
 
 export const FRAME_RATE = 24
 
-const LOOP_MODES = {
-  repeat: THREE.LoopRepeat,
-  once: THREE.LoopOnce,
-  pingpong: THREE.LoopPingPong,
-}
-
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
 
 const TICK_MS = 120
@@ -23,7 +17,8 @@ export function createAnimationController(gltf) {
   // animate all parts together immediately
   const activeIndices = new Set(clips.map((_, i) => i))
 
-  const getMaxDuration = () => {
+  let cachedDuration = 0
+  const computeMaxDuration = () => {
     let max = 0
     clips.forEach((c, i) => {
       if (activeIndices.has(i) && c.duration > max) {
@@ -33,8 +28,12 @@ export function createAnimationController(gltf) {
     if (max === 0 && clips.length > 0) {
       max = Math.max(...clips.map((c) => c.duration))
     }
+    cachedDuration = max
     return max
   }
+  computeMaxDuration()
+
+  const getMaxDuration = () => cachedDuration
 
   const state = {
     clips: clips.map((c, i) => ({ name: c.name || `Take ${i + 1}`, duration: c.duration })),
@@ -43,7 +42,7 @@ export function createAnimationController(gltf) {
     loop: 'repeat', // Default to repeating so animations loop continuously
     speed: 1,
     time: 0,
-    duration: getMaxDuration(),
+    duration: cachedDuration,
     finished: false,
   }
 
@@ -192,7 +191,7 @@ export function createAnimationController(gltf) {
           }
         }
       }
-      state.duration = getMaxDuration()
+      state.duration = computeMaxDuration()
       mixer.update(0)
       notify(true)
       notifyConfig()
@@ -214,7 +213,7 @@ export function createAnimationController(gltf) {
         activeIndices.delete(i)
         actions[i]?.stop()
       }
-      state.duration = getMaxDuration()
+      state.duration = computeMaxDuration()
       mixer.update(0)
       notify(true)
       notifyConfig()
@@ -228,7 +227,7 @@ export function createAnimationController(gltf) {
           a.paused = false
         })
       }
-      state.duration = getMaxDuration()
+      state.duration = computeMaxDuration()
       mixer.update(0)
       notify(true)
       notifyConfig()
@@ -236,7 +235,7 @@ export function createAnimationController(gltf) {
     deselectAll() {
       activeIndices.clear()
       actions.forEach((a) => a.stop())
-      state.duration = getMaxDuration()
+      state.duration = computeMaxDuration()
       mixer.update(0)
       notify(true)
       notifyConfig()
@@ -246,6 +245,7 @@ export function createAnimationController(gltf) {
       activeIndices.add(i)
       state.index = i
       state.duration = clips[i] ? clips[i].duration : 0
+      cachedDuration = state.duration
       state.finished = false
       const isLoop = state.loop === 'repeat'
       actions.forEach((a, idx) => {
@@ -319,7 +319,7 @@ export function createAnimationController(gltf) {
           api.selectClip(i)
         }
       }
-      state.duration = getMaxDuration()
+      state.duration = computeMaxDuration()
       state.finished = false
       configure()
       if (s.autoplay === false) {
@@ -336,29 +336,37 @@ export function createAnimationController(gltf) {
       const step = Math.min(Math.max(0, dt), 0.25)
       mixer.update(step * state.speed)
 
-      // Sync state.time to the running action time
-      let maxTime = 0
-      const maxDur = getMaxDuration()
-      actions.forEach((action, i) => {
-        if (activeIndices.has(i) && action.time > maxTime) {
-          maxTime = action.time
-        }
-      })
-      state.time = maxTime
-
-      // If loop is 'once' and we've reached the duration, finish playback
-      if (state.loop === 'once' && maxDur > 0 && maxTime >= maxDur - 1e-4) {
-        state.playing = false
-        state.finished = true
-        state.time = maxDur
-        actions.forEach((a) => {
-          if (a.isRunning()) a.paused = true
+      const maxDur = cachedDuration
+      if (state.loop === 'once') {
+        let maxTime = 0
+        actions.forEach((action, i) => {
+          if (activeIndices.has(i) && action.time > maxTime) {
+            maxTime = action.time
+          }
         })
-        notify(true)
-        return
+        state.time = maxTime
+        if (maxDur > 0 && maxTime >= maxDur - 1e-4) {
+          state.playing = false
+          state.finished = true
+          state.time = maxDur
+          actions.forEach((a) => {
+            if (a.isRunning()) a.paused = true
+          })
+          notify(true)
+          return
+        }
+        notify(false)
+      } else if (listeners.size > 0) {
+        // Continuous repeat mode: only inspect actions if subscribers exist (e.g. animation scrubber UI)
+        let maxTime = 0
+        actions.forEach((action, i) => {
+          if (activeIndices.has(i) && action.time > maxTime) {
+            maxTime = action.time
+          }
+        })
+        state.time = maxTime
+        notify(false)
       }
-
-      notify(false)
     },
     dispose() {
       listeners.clear()

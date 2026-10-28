@@ -22,7 +22,7 @@ services:
       SECRET_KEY: ${SECRET_KEY:-insecure-change-me-in-production}
       DEBUG: ${DEBUG:-False}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
-      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174}
       POSTGRES_DB: ${POSTGRES_DB:-ar_platform}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}

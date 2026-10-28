@@ -2,6 +2,7 @@ from django.shortcuts import render
 
 # Create your views here.
 
+from django.db import transaction
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -53,6 +54,12 @@ class TargetImageViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save()
 
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            ExperienceItem.objects.filter(target_image=instance).delete()
+            ARExperience.objects.filter(target_image=instance).update(target_image=None)
+            instance.delete()
+
 
 class ModelAssetViewSet(viewsets.ModelViewSet):
     serializer_class = ModelAssetSerializer
@@ -63,6 +70,12 @@ class ModelAssetViewSet(viewsets.ModelViewSet):
             ModelAsset.objects.filter(project__user=self.request.user),
             self.request,
         )
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            ExperienceItem.objects.filter(model_asset=instance).delete()
+            ARExperience.objects.filter(model_asset=instance).update(model_asset=None)
+            instance.delete()
 
 
 class ARExperienceViewSet(viewsets.ModelViewSet):

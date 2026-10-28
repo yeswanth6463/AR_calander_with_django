@@ -39,13 +39,16 @@ function Shell({ children }) {
     <div className="shell">
       <header className="topbar">
         <Link to="/" className="brand">
-          AR Studio
+          <span className="brand-mark" aria-hidden="true">AR</span>
+          <span>AR Studio</span>
         </Link>
+        <div id="studio-nav-slot" className="studio-nav-slot" />
         <div className="spacer" />
+        <div id="studio-status-slot" className="studio-status-slot" />
         <ThemeToggle />
         {user && (
           <>
-            <span className="muted">{user.email}</span>
+            <span className="user-chip" title={user.email}>{user.email}</span>
             <button
               className="btn ghost"
               onClick={async () => {

@@ -1,17 +1,29 @@
 
 from rest_framework import serializers
 
-from .models import Project, TargetImage, ModelAsset, ARExperience, ExperienceItem
+from .models import Project, ProjectPublication, TargetImage, ModelAsset, ARExperience, ExperienceItem
 
 
 class ProjectSerializer(serializers.ModelSerializer):
+    publication_slug = serializers.SerializerMethodField()
+
     class Meta:
         model = Project
         fields = [
             "id", "name", "slug", "description",
             "is_active", "created_at", "updated_at",
+            "publication_slug",
         ]
-        read_only_fields = ["id", "slug", "created_at", "updated_at"]
+        read_only_fields = ["id", "slug", "created_at", "updated_at", "publication_slug"]
+
+    def get_publication_slug(self, obj):
+        try:
+            published = obj.publication
+        except ProjectPublication.DoesNotExist:
+            return None
+        if published and published.is_active:
+            return published.slug or str(published.public_id)
+        return None
 
 
 class TargetImageSerializer(serializers.ModelSerializer):

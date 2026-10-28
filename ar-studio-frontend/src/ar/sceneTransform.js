@@ -1,6 +1,16 @@
 import * as THREE from 'three'
 
 const deg = THREE.MathUtils.degToRad
+const rad = THREE.MathUtils.radToDeg
+
+/**
+ * YXZ matches the studio's Global rotate gizmo: yaw around world/editor Y,
+ * then pitch around X, then roll around Z. XYZ was reversing yaw/pitch, so
+ * the published AR pose did not match the viewport.
+ */
+export const EULER_ORDER = 'YXZ'
+
+const _euler = new THREE.Euler(0, 0, 0, EULER_ORDER)
 
 /**
  * Authoritative AR item frame used by the studio editor:
@@ -14,31 +24,39 @@ const deg = THREE.MathUtils.degToRad
  *   editorY = AR.z
  *   editorZ = -AR.y
  *
- * The live viewer anchor uses the tracker pose (origin at the target top-left,
- * +X right, +Y down the image, +Z away from camera / into the target plane). A -90° pitch
- * on the content group maps editor Y-up space onto that anchor so saved Euler XYZ
- * rotations apply unchanged.
+ * Tracker pose (OpenCV → Three.js): origin at the target top-left, +X right,
+ * +Y down the image, +Z into the target (away from the camera). Rx(-90°) on
+ * the content group maps editor Y-up space onto that anchor so saved Euler
+ * angles apply unchanged.
  */
-
 export function attachContentToTargetAnchor(content, targetAspect) {
   const aspect = Number.isFinite(targetAspect) ? targetAspect : 1
   content.position.set(0.5, aspect / 2, 0)
+  content.rotation.order = 'XYZ'
   content.rotation.set(-Math.PI / 2, 0, 0)
   content.scale.set(1, 1, 1)
 }
 
 export function scaleXYZ(transform = {}) {
-  if (Array.isArray(transform.scale_xyz) && transform.scale_xyz.length >= 3) {
-    return transform.scale_xyz
+  const fromList = (arr) => {
+    if (!Array.isArray(arr) || arr.length < 3) return null
+    const xyz = arr.slice(0, 3).map((v) => Number(v))
+    if (xyz.some((v) => !Number.isFinite(v) || v <= 0)) return null
+    return xyz
   }
-  if (Array.isArray(transform.scale) && transform.scale.length >= 3) {
-    return transform.scale
+  const xyz = fromList(transform.scale_xyz) || fromList(transform.scale)
+  const scalar = Number(transform.scale)
+  const uniform = Number.isFinite(scalar) && scalar > 0 ? scalar : 1
+  // Prefer axis values when they were actually authored (not leftover 1,1,1
+  // while `scale` holds the inspector size).
+  if (xyz) {
+    const looksDefault = xyz.every((v) => Math.abs(v - 1) < 1e-6)
+    if (!looksDefault || Math.abs(uniform - 1) < 1e-6) return xyz
   }
-  const s = Number(transform.scale)
-  const n = Number.isFinite(s) && s > 0 ? s : 1
-  return [n, n, n]
+  return [uniform, uniform, uniform]
 }
 
+/** Same local TRS the editor viewport uses (Y-up, Z toward the top of the image). */
 export function applyARItemTransform(object, transform = {}) {
   const pos = transform.position || [0, 0, 0]
   const rot = transform.rotation || [0, 0, 0]
@@ -47,12 +65,68 @@ export function applyARItemTransform(object, transform = {}) {
   const py = Number(pos[1]) || 0
   const pz = Number(pos[2]) || 0
   object.position.set(px, pz, -py)
-  object.rotation.set(deg(rot[0] || 0), deg(rot[1] || 0), deg(rot[2] || 0))
+  object.rotation.order = EULER_ORDER
+  object.rotation.set(deg(rot[0] || 0), deg(rot[1] || 0), deg(rot[2] || 0), EULER_ORDER)
+  object.quaternion.setFromEuler(object.rotation)
   object.scale.set(
     Math.max(Number(scl[0]) || 1, 1e-4),
     Math.max(Number(scl[1]) || 1, 1e-4),
     Math.max(Number(scl[2]) || 1, 1e-4)
   )
+}
+
+export function eulerDegreesFromObject(object) {
+  _euler.order = EULER_ORDER
+  _euler.setFromQuaternion(object.quaternion, EULER_ORDER)
+  return {
+    rotation_x: rad(_euler.x),
+    rotation_y: rad(_euler.y),
+    rotation_z: rad(_euler.z),
+  }
+}
+
+function objectBounds(root) {
+  root.updateMatrixWorld(true)
+  const box = new THREE.Box3()
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry) return
+    if (obj.isSkinnedMesh) obj.skeleton?.update()
+    obj.geometry.computeBoundingBox?.()
+    const local = obj.geometry.boundingBox
+    if (!local || local.isEmpty()) return
+    box.union(local.clone().applyMatrix4(obj.matrixWorld))
+  })
+  if (box.isEmpty()) box.setFromObject(root)
+  return box
+}
+
+/** Sit a GLB on the marker plane; identical in the editor and the live viewer. */
+export function fitModelToMarker(root) {
+  root.position.set(0, 0, 0)
+  root.rotation.set(0, 0, 0)
+  root.scale.set(1, 1, 1)
+  const box = objectBounds(root)
+  const size = box.getSize(new THREE.Vector3())
+  const maxDim = Math.max(size.x, size.y, size.z)
+  const safeDim = Number.isFinite(maxDim) && maxDim > 1e-4 ? maxDim : 1
+  root.scale.setScalar(0.5 / safeDim)
+  const box2 = objectBounds(root)
+  if (!box2.isEmpty()) {
+    const c = box2.getCenter(new THREE.Vector3())
+    root.position.set(-c.x, -box2.min.y, -c.z)
+  }
+  root.traverse((obj) => {
+    if (!obj.isMesh) return
+    obj.frustumCulled = false
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+    mats.forEach((mat) => {
+      if (!mat) return
+      mat.depthTest = true
+      mat.depthWrite = mat.transparent ? false : mat.depthWrite !== false
+      mat.needsUpdate = true
+    })
+  })
+  return size
 }
 
 export function animationConfigFromState(st) {
