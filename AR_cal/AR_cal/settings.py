@@ -23,11 +23,31 @@ DEBUG = config("DEBUG", default=True, cast=bool)
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*", cast=Csv())
 
-CSRF_TRUSTED_ORIGINS = config(
-    "CSRF_TRUSTED_ORIGINS",
-    default="http://localhost:5173,http://127.0.0.1:5173",
-    cast=Csv(),
-)
+# Vite often jumps from 5173 to 5174+ when a port is busy. Always trust local
+# studio origins so DELETE/PATCH are not blocked by CSRF origin checks.
+_CSRF_FROM_ENV = [
+    origin
+    for origin in (
+        config(
+            "CSRF_TRUSTED_ORIGINS",
+            default="",
+            cast=Csv(),
+        )
+        or []
+    )
+    if origin
+]
+_CSRF_LOCAL = []
+for _port in list(range(5170, 5191)) + [3000, 4173, 8000, 8080]:
+    _CSRF_LOCAL.extend(
+        [
+            f"http://localhost:{_port}",
+            f"http://127.0.0.1:{_port}",
+            f"https://localhost:{_port}",
+            f"https://127.0.0.1:{_port}",
+        ]
+    )
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys(_CSRF_FROM_ENV + _CSRF_LOCAL))
 
 # Application definition
 

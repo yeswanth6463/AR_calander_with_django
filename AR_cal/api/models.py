@@ -264,6 +264,32 @@ class ExperienceItem(models.Model):
     def __str__(self):
         return f"Item {self.name or self.id} ({self.experience_id})"
 
+class ProjectPublication(models.Model):
+    """One public link for a chosen set of scenes in a project.
+
+    Scene rows stay on ARExperience. This record only stores their ids and a
+    frozen snapshot so the share URL keeps working after later edits.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.OneToOneField(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="publication",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    slug = models.SlugField(max_length=80, unique=True, null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+    scene_ids = models.JSONField(default=list, blank=True)
+    scene_snapshot = models.JSONField(blank=True, null=True)
+    published_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Publication - {self.project.name}"
+
+
 class PublishedExperience(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 

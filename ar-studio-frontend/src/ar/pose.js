@@ -104,8 +104,73 @@ export function poseTranslation(matrix) {
   return { x: matrix[12], y: matrix[13], z: matrix[14], dist: Math.hypot(matrix[12], matrix[13], matrix[14]) }
 }
 
-export function smoothCorners(prev, next, alpha = 0.35) {
+/**
+ * Closed-form 4-point projective homography from rectangle [0, 0, tw, th] to quad corners.
+ * Bypasses OpenCV matrix allocations entirely for ultra-low latency & zero GC pauses.
+ */
+export function getQuadHomography(targetW, targetH, corners) {
+  if (!corners || corners.length < 4) return null
+  const [p0, p1, p2, p3] = corners
+  const x0 = p0[0], y0 = p0[1]
+  const x1 = p1[0], y1 = p1[1]
+  const x2 = p2[0], y2 = p2[1]
+  const x3 = p3[0], y3 = p3[1]
+
+  const dx1 = x1 - x2
+  const dy1 = y1 - y2
+  const dx2 = x3 - x2
+  const dy2 = y3 - y2
+
+  const sx = x0 - x1 + x2 - x3
+  const sy = y0 - y1 + y2 - y3
+
+  const det = dx1 * dy2 - dx2 * dy1
+  if (Math.abs(det) < 1e-8) return null
+
+  let g = 0
+  let h = 0
+  if (Math.abs(sx) > 1e-8 || Math.abs(sy) > 1e-8) {
+    g = (sx * dy2 - sy * dx2) / det
+    h = (dx1 * sy - dy1 * sx) / det
+  }
+
+  const a = x1 - x0 + g * x1
+  const b = x3 - x0 + h * x3
+  const c = x0
+  const d = y1 - y0 + g * y1
+  const e = y3 - y0 + h * y3
+  const f = y0
+
+  const tw = Math.max(targetW - 1, 1)
+  const th = Math.max(targetH - 1, 1)
+
+  return [
+    a / tw, b / th, c,
+    d / tw, e / th, f,
+    g / tw, h / th, 1,
+  ]
+}
+
+/**
+ * Adaptive corner smoothing:
+ * - When stationary (< 2.5px jitter), heavy damping eliminates high-frequency tremor.
+ * - When moving quickly (> 15px displacement), alpha boosts up to 0.85 for lag-free tracking.
+ * - If displaced over 100px (fast camera snap), snaps instantly.
+ */
+export function smoothCorners(prev, next, baseAlpha = 0.35) {
   if (!prev) return next
+  let maxD = 0
+  for (let i = 0; i < 4; i++) {
+    const d = Math.hypot(next[i][0] - prev[i][0], next[i][1] - prev[i][1])
+    if (d > maxD) maxD = d
+  }
+  if (maxD > 100) return next
+  let alpha = baseAlpha
+  if (maxD < 2.5) {
+    alpha = 0.12 + 0.08 * (maxD / 2.5)
+  } else if (maxD > 15) {
+    alpha = Math.min(0.85, baseAlpha + 0.45 * Math.min(1, (maxD - 15) / 25))
+  }
   return next.map((p, i) => [
     prev[i][0] + (p[0] - prev[i][0]) * alpha,
     prev[i][1] + (p[1] - prev[i][1]) * alpha,

@@ -17,7 +17,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ARExperience, ExperienceItem, PublishedExperience, User
+from .models import ARExperience, ExperienceItem, Project, ProjectPublication, PublishedExperience, User
 from .serializer import _item_payload, build_scene_snapshot
 
 
@@ -181,6 +181,150 @@ def publish_experience(request, experience_id):
     )
 
 
+def _slug_taken(slug, publication=None):
+    pubs = ProjectPublication.objects.filter(slug=slug)
+    if publication is not None:
+        pubs = pubs.exclude(pk=publication.pk)
+    if pubs.exists():
+        return True
+    return PublishedExperience.objects.filter(slug=slug).exists()
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+def publish_project(request, project_id):
+    """Publish the checked scenes as one shareable experience."""
+    try:
+        project = Project.objects.get(id=project_id, user=request.user)
+    except Project.DoesNotExist:
+        return Response({"error": "Project not found."}, status=404)
+
+    raw_ids = request.data.get("scene_ids") if hasattr(request.data, "get") else None
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return Response(
+            {"error": "Select at least one scene to publish."},
+            status=400,
+        )
+
+    ordered = []
+    seen = set()
+    for value in raw_ids:
+        key = str(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+
+    experiences = list(
+        ARExperience.objects.filter(project=project, id__in=ordered).prefetch_related("items")
+    )
+    by_id = {str(exp.id): exp for exp in experiences}
+    missing = [key for key in ordered if key not in by_id]
+    if missing:
+        return Response(
+            {"error": "One or more scenes do not belong to this project."},
+            status=400,
+        )
+
+    scenes = []
+    for key in ordered:
+        exp = by_id[key]
+        if (
+            exp.target_image_id
+            and exp.model_asset_id
+            and not exp.items.exists()
+        ):
+            ExperienceItem.objects.create(
+                experience=exp,
+                target_image=exp.target_image,
+                model_asset=exp.model_asset,
+                name=exp.name,
+                order=0,
+                position_x=exp.position_x,
+                position_y=exp.position_y,
+                position_z=exp.position_z,
+                rotation_x=exp.rotation_x,
+                rotation_y=exp.rotation_y,
+                rotation_z=exp.rotation_z,
+                scale=exp.scale,
+                scale_x=exp.scale_x,
+                scale_y=exp.scale_y,
+                scale_z=exp.scale_z,
+            )
+        snap = build_scene_snapshot(request, exp)
+        if not snap["items"]:
+            return Response(
+                {"error": f'"{exp.name or "Untitled"}" has no target and model to publish.'},
+                status=400,
+            )
+        scenes.append({
+            "id": str(exp.id),
+            "name": exp.name or "Untitled",
+            "items": snap["items"],
+        })
+
+    slug = (request.data.get("slug") or "").strip().lower() if hasattr(request.data, "get") else ""
+    publication = ProjectPublication.objects.filter(project=project).first()
+    if slug:
+        try:
+            validate_slug(slug)
+        except DjangoValidationError:
+            return Response(
+                {"error": "Link name may only contain letters, numbers, hyphens and underscores."},
+                status=400,
+            )
+        if _slug_taken(slug, publication):
+            return Response(
+                {"error": f'The link name "{slug}" is already taken.'},
+                status=400,
+            )
+
+    created = publication is None
+    if created:
+        publication = ProjectPublication(project=project)
+    elif not slug:
+        slug = publication.slug or ""
+    if slug:
+        publication.slug = slug
+    if not created:
+        publication.version += 1
+        publication.is_active = True
+    publication.scene_ids = [scene["id"] for scene in scenes]
+    publication.scene_snapshot = {
+        "name": project.name,
+        "scene_count": len(scenes),
+        "scenes": scenes,
+    }
+    publication.save()
+
+    included = set(publication.scene_ids)
+    ARExperience.objects.filter(project=project, id__in=included).update(status="published")
+    own_published = set(
+        PublishedExperience.objects.filter(
+            experience__project=project, is_active=True
+        ).values_list("experience_id", flat=True)
+    )
+    ARExperience.objects.filter(project=project, status="published").exclude(
+        id__in=included
+    ).exclude(id__in=own_published).update(status="draft")
+
+    link = publication.slug or str(publication.public_id)
+    return Response(
+        {
+            "success": True,
+            "published_experience_id": str(publication.public_id),
+            "slug": publication.slug,
+            "version": publication.version,
+            "scene_count": len(scenes),
+            "scene_ids": publication.scene_ids,
+            "share_url": request.build_absolute_uri(f"/view/{link}"),
+            "url": f"/view/{link}",
+        },
+        status=201 if created else 200,
+    )
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def unpublish_experience(request, experience_id):
@@ -202,6 +346,44 @@ def unpublish_experience(request, experience_id):
 @permission_classes([AllowAny])
 def public_experience(request, public_id):
     import uuid as uuid_lib
+
+    bundle = None
+    try:
+        public_uuid = uuid_lib.UUID(str(public_id))
+        bundle = ProjectPublication.objects.filter(
+            public_id=public_uuid, is_active=True
+        ).select_related("project").first()
+    except ValueError:
+        bundle = None
+    if bundle is None:
+        bundle = ProjectPublication.objects.filter(
+            slug=str(public_id).lower(), is_active=True
+        ).select_related("project").first()
+    if bundle is not None:
+        snapshot = bundle.scene_snapshot if isinstance(bundle.scene_snapshot, dict) else {}
+        scenes = list(snapshot.get("scenes") or [])
+        all_items = []
+        for s in scenes:
+            all_items.extend(s.get("items") or [])
+        first = all_items[0] if all_items else None
+        return Response(
+            {
+                "public_id": str(bundle.public_id),
+                "slug": bundle.slug,
+                "name": snapshot.get("name") or bundle.project.name,
+                "version": bundle.version,
+                "published_at": bundle.published_at,
+                "project": bundle.project.name,
+                "target": first["target"] if first else None,
+                "model": first["model"] if first else None,
+                "transform": first["transform"] if first else None,
+                "item_count": len(all_items),
+                "items": all_items,
+                "scene_count": len(scenes),
+                "scene_ids": list(bundle.scene_ids or []),
+                "scenes": scenes,
+            }
+        )
 
     published = None
     try:
@@ -297,5 +479,14 @@ def public_experience(request, public_id):
             "transform": top_transform,
             "item_count": len(items),
             "items": items,
+            "scene_count": 1 if items else 0,
+            "scene_ids": [str(exp.id)],
+            "scenes": [
+                {
+                    "id": str(exp.id),
+                    "name": exp.name or "Untitled",
+                    "items": items,
+                }
+            ] if items else [],
         }
     )

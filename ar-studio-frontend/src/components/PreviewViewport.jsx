@@ -5,10 +5,13 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { createAnimationController } from '../ar/animation'
 import { createMediaPanel } from '../ar/mediaPanel'
+import {
+  applyARItemTransform,
+  eulerDegreesFromObject,
+  fitModelToMarker,
+} from '../ar/sceneTransform'
 import { createRectGizmo } from './RectGizmo'
 import UnityGizmoToolbar from './UnityGizmoToolbar'
-
-const deg = THREE.MathUtils.degToRad
 
 // API returns absolute URLs on :8000 — strip origin so requests go through
 // the Vite proxy (same-origin, no CORS).
@@ -50,6 +53,7 @@ export default function PreviewViewport({
   const transformModeRef = useRef(transformMode)
   const selectedItemIdRef = useRef(selectedItemId)
   const layoutRef = useRef([])
+  const draggingRef = useRef(false)
 
   // Row layout: distinct markers side by side, each item on its own marker.
   const targetsKey = items.map((i) => i.target?.id ?? '').join(',')
@@ -134,7 +138,7 @@ export default function PreviewViewport({
     const isLight = () => document.documentElement.dataset.theme === 'light'
     const applyTheme = () => {
       const light = isLight()
-      scene.background = new THREE.Color(light ? 0xf5f7fb : 0x0e1119)
+      scene.background = new THREE.Color(light ? 0xd8dadd : 0x292b2f)
       scene.fog = new THREE.Fog(scene.background, 5, 15)
       ambientLight.intensity = light ? 1.05 : 0.75
       key.intensity = light ? 1.35 : 1.2
@@ -380,14 +384,17 @@ export default function PreviewViewport({
       scaleControls.enabled = true
     }
     transformControls.addEventListener('dragging-changed', (event) => {
+      draggingRef.current = event.value
       if (event.value) beginExclusive(transformControls)
       else endExclusive()
     })
     rotateControls.addEventListener('dragging-changed', (event) => {
+      draggingRef.current = event.value
       if (event.value) beginExclusive(rotateControls)
       else endExclusive()
     })
     scaleControls.addEventListener('dragging-changed', (event) => {
+      draggingRef.current = event.value
       if (event.value) beginExclusive(scaleControls)
       else endExclusive()
     })
@@ -399,6 +406,7 @@ export default function PreviewViewport({
         (e) => groupsRef.current.get(e.id) === group
       )
       if (!entry) return
+      const rot = eulerDegreesFromObject(group)
 
       onTransformChangeRef.current?.(
         entry.id,
@@ -406,9 +414,9 @@ export default function PreviewViewport({
           position_x: group.position.x - entry.ox - 0.5,
           position_y: entry.aspect / 2 - group.position.z,
           position_z: group.position.y,
-          rotation_x: THREE.MathUtils.radToDeg(group.rotation.x),
-          rotation_y: THREE.MathUtils.radToDeg(group.rotation.y),
-          rotation_z: THREE.MathUtils.radToDeg(group.rotation.z),
+          rotation_x: rot.rotation_x,
+          rotation_y: rot.rotation_y,
+          rotation_z: rot.rotation_z,
           scale: (group.scale.x + group.scale.y + group.scale.z) / 3,
           scale_x: group.scale.x,
           scale_y: group.scale.y,
@@ -439,7 +447,7 @@ export default function PreviewViewport({
     })
     rectGizmoRef.current = rectGizmo
 
-    const grid = new THREE.GridHelper(8, 32, 0x2a3145, 0x1a1f2e)
+    const grid = new THREE.GridHelper(8, 32, 0x46484d, 0x383a3f)
     const gridLight = new THREE.GridHelper(8, 32, 0xaab4c8, 0xd3d9e5)
     const applyGridTheme = () => {
       grid.visible = !isLight()
@@ -726,18 +734,13 @@ export default function PreviewViewport({
   // -> ground plane (x right, z depth, y up); origin at plane center, with the
   // plane offset by its row slot (entry.ox).
   const applyTransforms = () => {
+    if (draggingRef.current || rectGizmoRef.current?.isDragging?.()) return
     for (const entry of layoutRef.current) {
       const g = groupsRef.current.get(entry.id)
       if (!g || !entry.transform) continue
-      const [px, py, pz] = entry.transform.position
-      const [rx, ry, rz] = entry.transform.rotation
-      g.position.set(entry.ox + 0.5 + px, pz, entry.aspect / 2 - py)
-      g.rotation.set(deg(rx), deg(ry), deg(rz))
-      if (Array.isArray(entry.transform.scale)) {
-        g.scale.set(...entry.transform.scale)
-      } else {
-        g.scale.setScalar(entry.transform.scale)
-      }
+      applyARItemTransform(g, entry.transform)
+      g.position.x += entry.ox + 0.5
+      g.position.z += entry.aspect / 2
     }
   }
 
@@ -807,7 +810,7 @@ export default function PreviewViewport({
         new THREE.EdgesGeometry(
           new THREE.PlaneGeometry(1, slot.aspect).rotateX(-Math.PI / 2)
         ),
-        new THREE.LineBasicMaterial({ color: 0x3b6ef5 })
+        new THREE.LineBasicMaterial({ color: 0x77797e })
       )
       edge.position.set(slot.ox + 0.5, 0.002, slot.aspect / 2)
       world.add(edge)
@@ -833,6 +836,7 @@ export default function PreviewViewport({
 
     for (const entry of entries) {
       const modelGroup = new THREE.Group()
+      modelGroup.rotation.order = 'YXZ'
       world.add(modelGroup)
       groupsRef.current.set(entry.id, modelGroup)
 
@@ -869,14 +873,7 @@ export default function PreviewViewport({
           (gltf) => {
             if (stale()) return
             const model = gltf.scene
-            const box = new THREE.Box3().setFromObject(model)
-            const size = box.getSize(new THREE.Vector3())
-            const maxDim = Math.max(size.x, size.y, size.z) || 1
-            const s = 0.5 / maxDim
-            model.scale.setScalar(s)
-            const box2 = new THREE.Box3().setFromObject(model)
-            const c = box2.getCenter(new THREE.Vector3())
-            model.position.set(-c.x, -box2.min.y, -c.z)
+            fitModelToMarker(model)
             modelGroup.add(model)
             rectGizmoRef.current?.invalidateBounds?.()
             if (gltf.animations?.length) {

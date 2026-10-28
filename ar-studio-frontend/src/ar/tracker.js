@@ -1,9 +1,9 @@
 /** Central tracking thresholds — tune here, not at call sites. */
 export const TRACK_CONFIG = {
-  processWidth: 800,
+  processWidth: 640,
   targetCompileMaxEdge: 1080,
   targetFeatures: 2500,
-  frameFeatures: 2000,
+  frameFeatures: 1200,
   scaleFactor: 1.2,
   nlevels: 8,
   edgeThreshold: 15,
@@ -363,21 +363,26 @@ const inliersByReproj = (H, srcPts, dstPts, thresh) => {
   return keep
 }
 
-const uniqueMatches = (pairs) => {
+const uniqueMatches = (pairs, maxMatches = 200) => {
   pairs.sort((a, b) => a.distance - b.distance)
   const usedQ = new Set()
   const usedT = new Set()
   const out = []
-  for (const p of pairs) {
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i]
     if (usedQ.has(p.queryIdx) || usedT.has(p.trainIdx)) continue
     usedQ.add(p.queryIdx)
     usedT.add(p.trainIdx)
     out.push(p)
+    if (out.length >= maxMatches) break
   }
   return out
 }
 
 const ratioMatches = (matcher, queryDesc, trainDesc, frameKps, targetKps, ratio) => {
+  if (!queryDesc || !trainDesc || queryDesc.rows < 4 || trainDesc.rows < 4) {
+    return []
+  }
   const pairs = []
   const knn = new cv.DMatchVectorVector()
   try {
@@ -417,7 +422,7 @@ const ratioMatches = (matcher, queryDesc, trainDesc, frameKps, targetKps, ratio)
   } finally {
     knn.delete()
   }
-  return uniqueMatches(pairs)
+  return uniqueMatches(pairs, 200)
 }
 
 const findHomographyMasked = (src, dst) => {
@@ -645,22 +650,28 @@ export class ImageTracker {
       return { found: false, reason: `only ${goods.length} matches`, matchCount: goods.length }
     }
 
-    const srcPts = []
-    const dstPts = []
-    for (const m of goods) {
+    const numGoods = goods.length
+    const srcFlat = new Float32Array(numGoods * 2)
+    const dstFlat = new Float32Array(numGoods * 2)
+    const srcPts = new Array(numGoods)
+    const dstPts = new Array(numGoods)
+    for (let i = 0; i < numGoods; i++) {
+      const m = goods[i]
       const tp = this.targetKeypoints[m.trainIdx]
       const fp = frame.keypoints.get(m.queryIdx).pt
       const [vx, vy] = frame.toVideo(fp.x, fp.y)
-      srcPts.push([tp.x, tp.y])
-      dstPts.push([vx, vy])
+      srcPts[i] = [tp.x, tp.y]
+      dstPts[i] = [vx, vy]
+      srcFlat[i * 2] = tp.x
+      srcFlat[i * 2 + 1] = tp.y
+      dstFlat[i * 2] = vx
+      dstFlat[i * 2 + 1] = vy
     }
 
-    const src = cv.matFromArray(srcPts.length, 1, cv.CV_32FC2, srcPts.flat())
-    const dst = cv.matFromArray(dstPts.length, 1, cv.CV_32FC2, dstPts.flat())
+    const src = cv.matFromArray(numGoods, 1, cv.CV_32FC2, srcFlat)
+    const dst = cv.matFromArray(numGoods, 1, cv.CV_32FC2, dstFlat)
     let Hmat = null
     let mask = null
-    let cornersMat = null
-    let projected = null
     try {
       const found = findHomographyMasked(src, dst)
       Hmat = found.H
@@ -707,17 +718,13 @@ export class ImageTracker {
         return { found: false, reason: 'clustered', matchCount: goods.length, inliers }
       }
 
-      cornersMat = cv.matFromArray(4, 1, cv.CV_32FC2, [
-        0, 0, this.targetW - 1, 0, this.targetW - 1, this.targetH - 1, 0, this.targetH - 1,
-      ])
-      projected = new cv.Mat()
-      cv.perspectiveTransform(cornersMat, projected, Hmat)
-      const f = projected.data32F
+      const tw1 = this.targetW - 1
+      const th1 = this.targetH - 1
       const corners = [
-        [f[0], f[1]],
-        [f[2], f[3]],
-        [f[4], f[5]],
-        [f[6], f[7]],
+        applyH(H, 0, 0),
+        applyH(H, tw1, 0),
+        applyH(H, tw1, th1),
+        applyH(H, 0, th1),
       ]
       const geom = validateProjectedQuad(corners, frame.width, frame.height, this.targetW, this.targetH)
       if (!geom.ok) {
@@ -742,8 +749,6 @@ export class ImageTracker {
       dst.delete()
       Hmat?.delete()
       mask?.delete()
-      cornersMat?.delete()
-      projected?.delete()
     }
   }
 
