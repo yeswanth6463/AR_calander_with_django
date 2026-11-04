@@ -1226,11 +1226,11 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
 .unity-gizmo-container {
   position: absolute;
   top: 12px;
-  right: 12px;
-  left: auto;
+  left: 12px;
+  right: auto;
   z-index: 10;
   display: flex;
-  flex-direction: row-reverse;
+  flex-direction: row;
   align-items: flex-start;
   gap: 8px;
   user-select: none;
@@ -1339,8 +1339,8 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
 
 .unity-tool-tooltip {
   position: absolute;
-  left: auto;
-  right: calc(100% + 8px);
+  left: calc(100% + 8px);
+  right: auto;
   top: 50%;
   transform: translateY(-50%);
   background: #14171d;
@@ -1386,8 +1386,8 @@ body.viewer-mode { overflow: hidden; overscroll-behavior: none; }
 .unity-settings-popover {
   position: absolute;
   top: 0;
-  right: 52px;
-  left: auto;
+  left: 52px;
+  right: auto;
   width: 230px;
   background: #1d2027;
   border: 1px solid #383e4c;
@@ -1859,4 +1859,508 @@ html[data-theme='light'] .viewport-badge {
 .viewer-anim-toggle .anim-toggle-icon {
   font-size: 15px;
 }
+
+/* ==========================================================================
+   Target Feature Points Preview Modal & Viewport Overlay (Vuforia / OpenCV Style)
+   ========================================================================== */
+
+.clickable-target-thumb {
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.clickable-target-thumb:hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.clickable-target-label {
+  cursor: pointer;
+}
+.clickable-target-label:hover .name {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.target-feature-pill-btn {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 3px 8px !important;
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  color: #ef4444 !important;
+  background: rgba(239, 68, 68, 0.08) !important;
+  transition: all 0.15s ease !important;
+}
+.target-feature-pill-btn:hover {
+  background: rgba(239, 68, 68, 0.18) !important;
+  border-color: #ef4444 !important;
+  color: #fff !important;
+}
+
+/* 3D Viewport Target Features Toggle Button */
+.viewport-features-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 13px;
+  background: rgba(17, 18, 20, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  transition: all 0.18s ease;
+  user-select: none;
+}
+.viewport-features-toggle:hover {
+  background: var(--hover);
+  border-color: #ef4444;
+  transform: translateY(-1px);
+}
+.viewport-features-toggle.active {
+  background: #dc2626;
+  border-color: #ef4444;
+  color: #ffffff;
+  box-shadow: 0 4px 18px rgba(220, 38, 38, 0.45);
+}
+.features-toggle-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  transition: background 0.15s;
+}
+.viewport-features-toggle.active .features-toggle-dot {
+  background: #ffffff;
+}
+
+/* Modal Window */
+.target-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: targetModalFadeIn 0.18s ease;
+}
+
+@keyframes targetModalFadeIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.target-modal-window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1020px;
+  height: 88vh;
+  max-height: 880px;
+  background: #15171a;
+  border: 1px solid #363a42;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+}
+
+.target-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  background: #111214;
+  border-bottom: 1px solid #2b2f38;
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.target-modal-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.target-modal-tag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: #8da2c4;
+}
+.target-modal-title-wrap h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f1f3f7;
+  margin: 0;
+}
+
+.target-modal-header-badges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.target-quality-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.target-quality-pill .stars {
+  letter-spacing: 1.5px;
+  font-size: 12px;
+}
+
+.target-features-count-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: #20242c;
+  border: 1px solid #323846;
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: #cfd6e4;
+}
+.target-features-count-chip .count-num {
+  font-weight: 700;
+  color: #ef4444;
+}
+.target-features-count-chip .count-label {
+  color: #8d98ab;
+}
+
+.target-modal-close-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #8da2c4;
+  font-size: 15px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.target-modal-close-btn:hover {
+  background: #2b303c;
+  color: #fff;
+}
+
+/* Modal Toolbar */
+.target-modal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #181a1f;
+  border-bottom: 1px solid #2b2f38;
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.target-view-mode-toggle {
+  display: flex;
+  background: #101215;
+  border: 1px solid #2e333e;
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.target-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: #9ba4b5;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.target-mode-btn:hover {
+  color: #fff;
+}
+.target-mode-btn.active {
+  background: #252b36;
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px #3d4658;
+}
+
+.target-modal-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.target-scale-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: #111317;
+  border: 1px solid #2b303a;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.target-scale-slider-wrap input[type='range'] {
+  width: 70px;
+  cursor: pointer;
+}
+.target-scale-slider-wrap .slider-val {
+  min-width: 32px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #cfd6e4;
+  font-weight: 600;
+}
+
+.target-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.target-zoom-controls .btn {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+.target-zoom-controls .zoom-reset-btn {
+  min-width: 48px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.target-download-btn {
+  background: #242933 !important;
+  border-color: #384050 !important;
+  color: #e2e8f0 !important;
+}
+.target-download-btn:hover {
+  background: #2e3544 !important;
+  color: #fff !important;
+}
+
+/* Canvas Viewport */
+.target-preview-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #0d0e11;
+  background-image: 
+    radial-gradient(circle at 50% 50%, #16181e 0%, #0d0e11 100%);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+}
+.target-preview-viewport.panning {
+  cursor: grabbing;
+}
+
+.target-canvas-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.05s ease-out;
+}
+
+.target-feature-canvas {
+  max-width: 82vw;
+  max-height: 56vh;
+  object-fit: contain;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+  border-radius: 4px;
+  border: 1px solid #2e3440;
+}
+
+.target-viewport-hint {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 17, 21, 0.85);
+  border: 1px solid #2b303a;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: #7d889b;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+}
+
+.target-modal-loading {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: #9ba5b7;
+  font-size: 13px;
+}
+.target-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(239, 68, 68, 0.2);
+  border-top-color: #ef4444;
+  border-radius: 50%;
+  animation: targetSpin 0.7s linear infinite;
+}
+@keyframes targetSpin {
+  to { transform: rotate(360deg); }
+}
+
+.target-modal-error {
+  position: absolute;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid #ef4444;
+  color: #fca5a5;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* Modal Footer */
+.target-modal-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 18px;
+  background: #111214;
+  border-top: 1px solid #2b2f38;
+  flex-shrink: 0;
+}
+.target-footer-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  font-size: 11.5px;
+  color: #8c96a7;
+}
+.target-footer-info strong {
+  color: #d1d7e2;
+}
+.target-footer-advice {
+  font-size: 11px;
+  color: #6d7788;
+  margin: 0;
+}
+
+/* Light Theme Overrides */
+html[data-theme='light'] .target-modal-window {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2);
+}
+html[data-theme='light'] .target-modal-header {
+  background: #f8fafc;
+  border-bottom-color: #e2e8f0;
+}
+html[data-theme='light'] .target-modal-title-wrap h2 {
+  color: #0f172a;
+}
+html[data-theme='light'] .target-modal-tag {
+  color: #475569;
+}
+html[data-theme='light'] .target-features-count-chip {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+html[data-theme='light'] .target-modal-close-btn {
+  color: #64748b;
+}
+html[data-theme='light'] .target-modal-close-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+html[data-theme='light'] .target-modal-toolbar {
+  background: #f1f5f9;
+  border-bottom-color: #e2e8f0;
+}
+html[data-theme='light'] .target-view-mode-toggle {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+html[data-theme='light'] .target-mode-btn {
+  color: #475569;
+}
+html[data-theme='light'] .target-mode-btn.active {
+  background: #e2e8f0;
+  color: #0f172a;
+  box-shadow: inset 0 0 0 1px #94a3b8;
+}
+html[data-theme='light'] .target-scale-slider-wrap {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+html[data-theme='light'] .target-scale-slider-wrap .slider-val {
+  color: #0f172a;
+}
+html[data-theme='light'] .target-download-btn {
+  background: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+html[data-theme='light'] .target-preview-viewport {
+  background: #e8ecf2;
+  background-image: radial-gradient(circle at 50% 50%, #f1f5f9 0%, #e2e8f0 100%);
+}
+html[data-theme='light'] .target-feature-canvas {
+  border-color: #94a3b8;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.12);
+}
+html[data-theme='light'] .target-viewport-hint {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: #cbd5e1;
+  color: #475569;
+}
+html[data-theme='light'] .target-modal-footer {
+  background: #f8fafc;
+  border-top-color: #e2e8f0;
+}
+html[data-theme='light'] .target-footer-info {
+  color: #475569;
+}
+html[data-theme='light'] .target-footer-info strong {
+  color: #0f172a;
+}
+html[data-theme='light'] .target-footer-advice {
+  color: #64748b;
+}
+html[data-theme='light'] .viewport-features-toggle {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: #cbd5e1;
+  color: #0f172a;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.1);
+}
+html[data-theme='light'] .viewport-features-toggle:hover {
+  background: #f1f5f9;
+  border-color: #ef4444;
+}
+html[data-theme='light'] .viewport-features-toggle.active {
+  background: #dc2626;
+  border-color: #ef4444;
+  color: #ffffff;
+}
+
 

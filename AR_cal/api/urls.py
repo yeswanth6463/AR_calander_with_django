@@ -10,6 +10,7 @@ from .views import (
     ExperienceItemViewSet,
     register_target,
     track_image,
+    target_features,
 )
 from .views_auth import (
     CSRFView,
@@ -41,6 +42,11 @@ urlpatterns = [
         "targets/<uuid:target_id>/register/",
         register_target,
         name="register-target",
+    ),
+    path(
+        "targets/<uuid:target_id>/features/",
+        target_features,
+        name="target-features",
     ),
     path(
         "targets/<uuid:target_id>/track/",

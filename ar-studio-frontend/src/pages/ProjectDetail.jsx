@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 import AnimationPanel from '../components/AnimationPanel'
 import PreviewViewport from '../components/PreviewViewport'
+import TargetFeatureModal from '../components/TargetFeatureModal'
 
 const rel = (url) => {
   try {
@@ -23,6 +24,7 @@ export default function ProjectDetail() {
   const [animationExpanded, setAnimationExpanded] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [previewTarget, setPreviewTarget] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
   const [selectedItemId, setSelectedItemId] = useState(null)
   const [publishIds, setPublishIds] = useState(() => new Set())
@@ -266,6 +268,7 @@ export default function ProjectDetail() {
               onError={setError}
               onNotice={setNotice}
               selectedId={selectedItem?.target_image}
+              onPreviewTarget={setPreviewTarget}
             />
             <AssetsPanel
               projectId={id}
@@ -349,11 +352,18 @@ export default function ProjectDetail() {
           />
         </aside>
       </div>
+
+      {previewTarget && (
+        <TargetFeatureModal
+          target={previewTarget}
+          onClose={() => setPreviewTarget(null)}
+        />
+      )}
     </div>
   )
 }
 
-function TargetsPanel({ projectId, targets, reload, onError, onNotice, selectedId }) {
+function TargetsPanel({ projectId, targets, reload, onError, onNotice, selectedId, onPreviewTarget }) {
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState(true)
 
@@ -429,15 +439,38 @@ function TargetsPanel({ projectId, targets, reload, onError, onNotice, selectedI
           )}
           <div className="tree-list">
             {targets.map((t) => (
-              <div key={t.id} className={`tree-row ${selectedId === t.id ? 'active' : ''}`}>
-                {t.image && <img className="tree-thumb" src={rel(t.image)} alt="" />}
-                <span className="tree-label">
+              <div key={t.id} className={`tree-row target-tree-row ${selectedId === t.id ? 'active' : ''}`}>
+                {t.image && (
+                  <img
+                    className="tree-thumb clickable-target-thumb"
+                    src={rel(t.image)}
+                    alt={t.name}
+                    title="Click to preview OpenCV feature tracking points"
+                    onClick={() => onPreviewTarget?.(t)}
+                  />
+                )}
+                <span
+                  className="tree-label clickable-target-label"
+                  title="Click to preview OpenCV feature tracking points"
+                  onClick={() => onPreviewTarget?.(t)}
+                >
                   <span className="name">{t.name}</span>
                   <span className="tiny muted">
                     {t.target_width} m · {t.tracking_data ? 'tracked' : 'unregistered'}
                   </span>
                 </span>
                 <div className="item-actions">
+                  <button
+                    type="button"
+                    className="btn ghost small target-feature-pill-btn"
+                    title="Preview Target Features (Grayscale & Red Circles)"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onPreviewTarget?.(t)
+                    }}
+                  >
+                    🎯 Features
+                  </button>
                   {!t.tracking_data && (
                     <button className="btn small" onClick={() => register(t.id)}>Register</button>
                   )}

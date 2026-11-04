@@ -2,6 +2,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_slug
+from django.db import IntegrityError
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie
 
@@ -53,11 +54,24 @@ def register(request):
     if len(password) < 8:
         return Response({"error": "Password must be at least 8 characters."}, status=400)
     if User.objects.filter(email=email).exists():
-        return Response({"error": "An account with this email already exists."}, status=400)
+        return Response({"error": "An account with this email already exists. Please sign in."}, status=400)
+    if User.objects.filter(username=username).exists():
+        return Response({"error": f"The username '{username}' is already taken. Please choose another username."}, status=400)
 
-    user = User.objects.create_user(
-        username=username, email=email, password=password
-    )
+    try:
+        user = User.objects.create_user(
+            username=username, email=email, password=password
+        )
+    except IntegrityError as exc:
+        err_msg = str(exc).lower()
+        if "username" in err_msg:
+            return Response({"error": f"The username '{username}' is already taken. Please choose another username."}, status=400)
+        elif "email" in err_msg:
+            return Response({"error": "An account with this email already exists. Please sign in."}, status=400)
+        return Response({"error": "Could not create account with the provided details."}, status=400)
+    except Exception as exc:
+        return Response({"error": str(exc)}, status=400)
+
     login(request, user)
     return Response({"user": user_payload(user)}, status=status.HTTP_201_CREATED)
 
@@ -67,18 +81,23 @@ def register(request):
 @permission_classes([AllowAny])
 @parser_classes([JSONParser])
 def login_view(request):
-    email = (request.data.get("email") or "").strip().lower()
+    identifier = (request.data.get("email") or "").strip()
+    identifier_lower = identifier.lower()
     password = request.data.get("password") or ""
 
-    # Resolve the account by email first — usernames may differ from email.
-    user_obj = User.objects.filter(email=email).first()
+    # Resolve account by email or username
+    user_obj = (
+        User.objects.filter(email=identifier_lower).first()
+        or User.objects.filter(username=identifier).first()
+        or User.objects.filter(username=identifier_lower).first()
+    )
     user = (
         authenticate(request, username=user_obj.username, password=password)
         if user_obj
         else None
     )
     if user is None:
-        return Response({"error": "Invalid email or password."}, status=401)
+        return Response({"error": "Invalid email/username or password."}, status=401)
     login(request, user)
     return Response({"user": user_payload(user)})
 

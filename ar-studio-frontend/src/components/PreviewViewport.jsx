@@ -12,6 +12,7 @@ import {
 } from '../ar/sceneTransform'
 import { createRectGizmo } from './RectGizmo'
 import UnityGizmoToolbar from './UnityGizmoToolbar'
+import { drawFeaturePreview } from '../ar/targetFeaturePreview'
 
 // API returns absolute URLs on :8000 — strip origin so requests go through
 // the Vite proxy (same-origin, no CORS).
@@ -47,6 +48,8 @@ export default function PreviewViewport({
   const [snapEnabled, setSnapEnabled] = useState(false)
   const [gizmoSize, setGizmoSize] = useState(1)
   const [modelReady, setModelReady] = useState(false)
+  const [showTargetFeatures, setShowTargetFeatures] = useState(false)
+  const targetPlanesRef = useRef(new Map())
   const [rectOrientation, setRectOrientation] = useState('horizontal')
   const onTransformChangeRef = useRef(onTransformChange)
   const onAnimationControllerRef = useRef(onAnimationController)
@@ -792,19 +795,28 @@ export default function PreviewViewport({
         ox: entry.ox,
         aspect: entry.aspect,
         image: entry.target.image,
+        target: entry.target,
       })
     }
+    targetPlanesRef.current.clear()
+
     for (const slot of slots.values()) {
       const planeGeo = new THREE.PlaneGeometry(1, slot.aspect)
       planeGeo.rotateX(-Math.PI / 2)
-      const tex = new THREE.TextureLoader().load(rel(slot.image))
-      tex.colorSpace = THREE.SRGBColorSpace
-      const plane = new THREE.Mesh(
-        planeGeo,
-        new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, metalness: 0 })
-      )
+      const normalTex = new THREE.TextureLoader().load(rel(slot.image))
+      normalTex.colorSpace = THREE.SRGBColorSpace
+      const planeMat = new THREE.MeshStandardMaterial({ map: normalTex, roughness: 0.9, metalness: 0 })
+      const plane = new THREE.Mesh(planeGeo, planeMat)
       plane.position.set(slot.ox + 0.5, 0.001, slot.aspect / 2)
       world.add(plane)
+
+      targetPlanesRef.current.set(slot.target.id, {
+        mesh: plane,
+        material: planeMat,
+        normalTex,
+        featureTex: null,
+        slot,
+      })
 
       const edge = new THREE.LineSegments(
         new THREE.EdgesGeometry(
@@ -927,12 +939,59 @@ export default function PreviewViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items])
 
+  // Toggle target feature points (grayscale + red circles) on ground marker planes
+  useEffect(() => {
+    for (const entry of targetPlanesRef.current.values()) {
+      if (showTargetFeatures) {
+        if (!entry.featureTex) {
+          const img = new Image()
+          img.crossOrigin = 'anonymous'
+          img.onload = () => {
+            const canvas = document.createElement('canvas')
+            const kps =
+              entry.slot.target?.tracking_data?.rich_keypoints ||
+              entry.slot.target?.tracking_data?.keypoints ||
+              []
+            drawFeaturePreview(canvas, img, kps, {
+              grayscale: true,
+              showFeatures: true,
+              strokeColor: '#ff2222',
+            })
+            const tex = new THREE.CanvasTexture(canvas)
+            tex.colorSpace = THREE.SRGBColorSpace
+            entry.featureTex = tex
+            if (showTargetFeatures) {
+              entry.material.map = tex
+              entry.material.needsUpdate = true
+            }
+          }
+          img.src = rel(entry.slot.image)
+        } else {
+          entry.material.map = entry.featureTex
+          entry.material.needsUpdate = true
+        }
+      } else {
+        entry.material.map = entry.normalTex
+        entry.material.needsUpdate = true
+      }
+    }
+  }, [showTargetFeatures])
+
   return (
     <div className="viewport">
       {/* Canvas host must stay childless: React must not reconcile away the
           imperatively-appended WebGL canvas when the badge toggles below. */}
       <div className="viewport-canvas" ref={mountRef} />
       {modelState && <div className="viewport-badge">{modelState}</div>}
+      <button
+        type="button"
+        className={`viewport-features-toggle ${showTargetFeatures ? 'active' : ''}`}
+        onClick={() => setShowTargetFeatures((v) => !v)}
+        title="Toggle OpenCV Feature Points (Grayscale + Red Circles) on ground marker"
+      >
+        <span className="features-toggle-dot" />
+        {showTargetFeatures ? '✓ Target Features ON' : '🎯 Target Features'}
+      </button>
       {modelReady && (
         <UnityGizmoToolbar
           mode={transformMode}
