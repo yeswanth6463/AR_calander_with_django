@@ -17,9 +17,12 @@ from .serializer import (
     ARExperienceSerializer,
     ExperienceItemSerializer,
 )
+from django.http import HttpResponse
 from .service.image_tracker import (
     extract_target_features,
     track_target_image,
+    generate_feature_preview_image,
+    get_target_features_details,
 )
 
 
@@ -143,6 +146,35 @@ def register_target(request, target_id):
         "target_id": str(target.id),
         "feature_count": len(features["keypoints"]),
     })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def target_features(request, target_id):
+    target = get_object_or_404(
+        TargetImage,
+        id=target_id,
+        project__user=request.user,
+        is_active=True,
+    )
+    if not target.image:
+        return Response({"error": "Target image is missing."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if request.query_params.get("format") == "image":
+        try:
+            png_bytes, _count = generate_feature_preview_image(target.image.path)
+            return HttpResponse(png_bytes, content_type="image/png")
+        except Exception as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        details = get_target_features_details(target.image.path, target.tracking_data)
+        details["target_id"] = str(target.id)
+        details["name"] = target.name
+        details["preview_url"] = f"/api/targets/{target.id}/features/?format=image"
+        return Response(details)
+    except Exception as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(["POST"])
