@@ -15,24 +15,24 @@ export const TRACK_CONFIG = {
   claheTiles: 8,
   ratio: 0.82,
   knnK: 2,
-  ransacReproj: 5.0,
-  minRatioMatches: 6,
-  minInliers: 7,
-  minInliersLocked: 5,
-  minInlierRatio: 0.14,
-  minInlierRatioLocked: 0.1,
-  minSpreadCells: 1,
-  maxReprojError: 8.0,
-  minQuadAreaFrac: 0.0004,
-  maxQuadAreaFrac: 4.0,
-  minQuadPixelArea: 35 * 35,
-  minAngleDeg: 20,
-  maxAngleDeg: 160,
-  boundsMarginFrac: 0.5,
-  minAspectRel: 0.15,
-  maxAspectRel: 6.0,
-  roiPad: 0.5,
-  minRoiFrac: 0.06,
+  ransacReproj: 4.5,
+  minRatioMatches: 8,
+  minInliers: 10,
+  minInliersLocked: 8,
+  minInlierRatio: 0.18,
+  minInlierRatioLocked: 0.14,
+  minSpreadCells: 2,
+  maxReprojError: 4.5,
+  minQuadAreaFrac: 0.002,
+  maxQuadAreaFrac: 1.25,
+  minQuadPixelArea: 45 * 45,
+  minAngleDeg: 35,
+  maxAngleDeg: 145,
+  boundsMarginFrac: 0.20,
+  minAspectRel: 0.35,
+  maxAspectRel: 2.8,
+  roiPad: 0.4,
+  minRoiFrac: 0.08,
   get debug() {
     try {
       return localStorage.getItem('arTrackerDebug') === '1'
@@ -275,6 +275,8 @@ export function validateProjectedQuad(corners, frameW, frameH, targetW, targetH,
     if (!sign) sign = s
     else if (s !== sign) return { ok: false, reason: 'not convex' }
   }
+  // Clockwise corner order required; inverted orientation indicates false back-facing reflection
+  if (sign <= 0) return { ok: false, reason: 'inverted orientation' }
 
   const area =
     0.5 *
@@ -676,7 +678,7 @@ export class ImageTracker {
       const found = findHomographyMasked(src, dst)
       Hmat = found.H
       mask = found.mask
-      const H = mat9(Hmat)
+      let H = mat9(Hmat)
       if (!H || !homographyFinite(H)) {
         bumpReject('homography failed')
         return { found: false, reason: 'homography failed', matchCount: goods.length }
@@ -716,6 +718,34 @@ export class ImageTracker {
       if (cells < TRACK_CONFIG.minSpreadCells) {
         bumpReject('clustered')
         return { found: false, reason: 'clustered', matchCount: goods.length, inliers }
+      }
+
+      // Least-squares homography refinement over all inliers:
+      // Averages out random RANSAC 4-point subset jitter for rock-solid stability
+      if (inliers >= 6) {
+        const inFlatSrc = new Float32Array(inliers * 2)
+        const inFlatDst = new Float32Array(inliers * 2)
+        for (let i = 0; i < inliers; i++) {
+          inFlatSrc[i * 2] = srcIn[i][0]
+          inFlatSrc[i * 2 + 1] = srcIn[i][1]
+          inFlatDst[i * 2] = dstIn[i][0]
+          inFlatDst[i * 2 + 1] = dstIn[i][1]
+        }
+        const srcRef = cv.matFromArray(inliers, 1, cv.CV_32FC2, inFlatSrc)
+        const dstRef = cv.matFromArray(inliers, 1, cv.CV_32FC2, inFlatDst)
+        try {
+          const Hrefined = cv.findHomography(srcRef, dstRef, 0)
+          const HrefArr = mat9(Hrefined)
+          if (HrefArr && homographyFinite(HrefArr)) {
+            H = HrefArr
+          }
+          Hrefined?.delete?.()
+        } catch {
+          /* safely keep RANSAC H if least-squares is not supported */
+        } finally {
+          srcRef.delete()
+          dstRef.delete()
+        }
       }
 
       const tw1 = this.targetW - 1

@@ -9,7 +9,9 @@ import {
   applyARItemTransform,
   eulerDegreesFromObject,
   fitModelToMarker,
+  createContactShadow,
 } from '../ar/sceneTransform'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { createRectGizmo } from './RectGizmo'
 import UnityGizmoToolbar from './UnityGizmoToolbar'
 import { drawFeaturePreview } from '../ar/targetFeaturePreview'
@@ -123,29 +125,41 @@ export default function PreviewViewport({
     if (!mount) return
     try {
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(mount.clientWidth, mount.clientHeight)
+    renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.05
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85)
+    const pmremGenerator = new THREE.PMREMGenerator(renderer)
+    pmremGenerator.compileEquirectangularShader()
+    const roomEnv = new RoomEnvironment()
+    const envTexture = pmremGenerator.fromScene(roomEnv, 0.04).texture
+    scene.environment = envTexture
+
+    const ambientLight = new THREE.HemisphereLight(0xffffff, 0x334455, 0.65)
     scene.add(ambientLight)
-    const key = new THREE.DirectionalLight(0xffffff, 1.25)
+    const key = new THREE.DirectionalLight(0xffffff, 1.45)
     key.position.set(2, 4, 2)
     scene.add(key)
-    const fill = new THREE.DirectionalLight(0x88aaff, 0.4)
+    const fill = new THREE.DirectionalLight(0x90b4d6, 0.5)
     fill.position.set(-2, 1, -2)
     scene.add(fill)
+    const rim = new THREE.DirectionalLight(0xffeedd, 0.45)
+    rim.position.set(0, -2, -2)
+    scene.add(rim)
 
     const isLight = () => document.documentElement.dataset.theme === 'light'
     const applyTheme = () => {
       const light = isLight()
-      scene.background = new THREE.Color(light ? 0xd8dadd : 0x292b2f)
+      scene.background = new THREE.Color(light ? 0xd8dadd : 0x202226)
       scene.fog = new THREE.Fog(scene.background, 5, 15)
-      ambientLight.intensity = light ? 1.05 : 0.75
-      key.intensity = light ? 1.35 : 1.2
-      fill.intensity = light ? 0.55 : 0.4
+      ambientLight.intensity = light ? 0.8 : 0.65
+      key.intensity = light ? 1.55 : 1.45
+      fill.intensity = light ? 0.6 : 0.5
     }
     applyTheme()
 
@@ -505,6 +519,8 @@ export default function PreviewViewport({
     return () => {
       cancelAnimationFrame(raf)
       resizeObserver.disconnect()
+      pmremGenerator.dispose()
+      envTexture.dispose()
       for (const ctl of animCtlsRef.current.values()) ctl.dispose()
       animCtlsRef.current.clear()
       for (const panel of mediaPanelsRef.current.values()) panel.dispose()
@@ -885,8 +901,30 @@ export default function PreviewViewport({
           (gltf) => {
             if (stale()) return
             const model = gltf.scene
-            fitModelToMarker(model)
+            const size = fitModelToMarker(model)
             modelGroup.add(model)
+
+            // Add soft contact shadow under model onto the target marker plane
+            const shadow = createContactShadow(size.x, size.z)
+            const pz = Number(entry.transform?.position?.[2] || entry.transform?.position_z || 0)
+            shadow.position.set(0, -pz + 0.0015, 0)
+            modelGroup.add(shadow)
+
+            // Enhance materials and textures
+            model.traverse((child) => {
+              if (child.isMesh) {
+                child.frustumCulled = false
+                const mats = Array.isArray(child.material) ? child.material : [child.material]
+                mats.forEach((mat) => {
+                  if (!mat) return
+                  mat.envMapIntensity = 1.15
+                  if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace
+                  if (mat.emissiveMap) mat.emissiveMap.colorSpace = THREE.SRGBColorSpace
+                  mat.needsUpdate = true
+                })
+              }
+            })
+
             rectGizmoRef.current?.invalidateBounds?.()
             if (gltf.animations?.length) {
               const ctl = createAnimationController(gltf)

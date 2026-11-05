@@ -13,9 +13,15 @@ export function createAnimationController(gltf) {
   const listeners = new Set()
   const configListeners = new Set()
 
-  // Default: check all clips so multi-part models (e.g. drones, cranes)
-  // animate all parts together immediately
-  const activeIndices = new Set(clips.map((_, i) => i))
+  // Default: prefer real motion clips (> 0.08s) over 1-frame dummy static clips (<= 0.08s)
+  // while ensuring multi-part models (e.g. drones, cranes) animate together.
+  const hasRealClips = clips.some((c) => c.duration > 0.08)
+  const activeIndices = new Set(
+    clips
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => !hasRealClips || c.duration > 0.08)
+      .map(({ i }) => i)
+  )
 
   let cachedDuration = 0
   const computeMaxDuration = () => {
@@ -105,6 +111,12 @@ export function createAnimationController(gltf) {
   })
 
   const play = () => {
+    if (activeIndices.size === 0) {
+      clips.forEach((c, i) => {
+        if (!hasRealClips || c.duration > 0.08) activeIndices.add(i)
+      })
+      computeMaxDuration()
+    }
     if (activeIndices.size === 0) return
     const maxDur = getMaxDuration()
     if (state.finished || (state.loop === 'once' && state.time >= maxDur - 1e-4)) {
@@ -306,7 +318,9 @@ export function createAnimationController(gltf) {
           if (i >= 0) activeIndices.add(i)
         })
         if (activeIndices.size === 0) {
-          clips.forEach((_, i) => activeIndices.add(i))
+          clips.forEach((c, i) => {
+            if (!hasRealClips || c.duration > 0.08) activeIndices.add(i)
+          })
         }
       } else if (Array.isArray(s.activeIndices) && s.activeIndices.length) {
         activeIndices.clear()

@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import {
   ImageTracker,
   extractFrame,
@@ -18,7 +19,7 @@ import {
   smoothCorners,
   getQuadHomography,
 } from '../ar/pose'
-import { attachContentToTargetAnchor, applyARItemTransform, fitModelToMarker } from '../ar/sceneTransform'
+import { attachContentToTargetAnchor, applyARItemTransform, fitModelToMarker, createContactShadow } from '../ar/sceneTransform'
 import { createAnimationController } from '../ar/animation'
 import { createMediaPanel } from '../ar/mediaPanel'
 import AnimationPanel from '../components/AnimationPanel'
@@ -73,8 +74,8 @@ const waitForCv = () =>
     }, 100)
   })
 
-const LOSS_GRACE_MS = 1000
-const SMOOTH_ALPHA = 0.45
+const LOSS_GRACE_MS = 1200
+const SMOOTH_ALPHA = 0.32
 
 const playChime = () => {
   try {
@@ -287,25 +288,48 @@ export default function Viewer() {
         await video.play()
 
         const glCanvas = glRef.current
-        glCanvas.width = video.videoWidth
-        glCanvas.height = video.videoHeight
-
-        const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, alpha: true, antialias: true })
+        const dpr = Math.min(window.devicePixelRatio || 1, 2)
+        const renderer = new THREE.WebGLRenderer({
+          canvas: glCanvas,
+          alpha: true,
+          antialias: true,
+          powerPreference: 'high-performance',
+        })
         renderer.setClearColor(0x000000, 0)
         renderer.outputColorSpace = THREE.SRGBColorSpace
-        renderer.setPixelRatio(1)
-        renderer.setSize(glCanvas.width, glCanvas.height, false)
+        renderer.toneMapping = THREE.ACESFilmicToneMapping
+        renderer.toneMappingExposure = 1.05
+        renderer.setPixelRatio(dpr)
+        renderer.setSize(video.videoWidth, video.videoHeight, false)
 
         const scene = new THREE.Scene()
-        const camera = new THREE.PerspectiveCamera(60, glCanvas.width / glCanvas.height, 0.01, 1000)
+        const pmremGenerator = new THREE.PMREMGenerator(renderer)
+        pmremGenerator.compileEquirectangularShader()
+        const roomEnv = new RoomEnvironment()
+        const envTexture = pmremGenerator.fromScene(roomEnv, 0.04).texture
+        scene.environment = envTexture
+
+        const camera = new THREE.PerspectiveCamera(50, video.videoWidth / video.videoHeight, 0.01, 1000)
         scene.add(camera)
-        scene.add(new THREE.AmbientLight(0xffffff, 1.15))
-        const key = new THREE.DirectionalLight(0xffffff, 1.35)
-        key.position.set(0.4, 0.8, 1)
+
+        // Soft hemisphere ambient light
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x334455, 0.6)
+        scene.add(hemiLight)
+
+        // Key light (camera relative: illuminates front-right face crisp and bright)
+        const key = new THREE.DirectionalLight(0xffffff, 1.45)
+        key.position.set(0.5, 1.0, 1.2)
         camera.add(key)
-        const fill = new THREE.DirectionalLight(0x88aaff, 0.55)
-        fill.position.set(-0.6, -0.2, 0.4)
+
+        // Fill light (camera relative: fills shadows with subtle sky tone)
+        const fill = new THREE.DirectionalLight(0x90b4d6, 0.5)
+        fill.position.set(-0.8, 0.1, 0.5)
         camera.add(fill)
+
+        // Rim / Back light (camera relative: adds depth separation against real room background)
+        const rim = new THREE.DirectionalLight(0xffeedd, 0.55)
+        rim.position.set(0, -0.6, -1.0)
+        camera.add(rim)
 
         const applyCoverLayout = (el, vw, vh) => {
           const root = el?.parentElement
@@ -327,16 +351,21 @@ export default function Viewer() {
 
         // Orientation / video-size changes: keep drawing-buffer aspect in sync
         // with the camera feed so the pose matrix matches the frame.
+        let lastSyncW = 0
+        let lastSyncH = 0
         const syncVideoSize = () => {
           const vw = video.videoWidth
           const vh = video.videoHeight
           if (!vw || !vh) return
-          if (glCanvas.width !== vw || glCanvas.height !== vh) {
-            glCanvas.width = vw
-            glCanvas.height = vh
+          if (lastSyncW !== vw || lastSyncH !== vh) {
+            lastSyncW = vw
+            lastSyncH = vh
             renderer.setSize(vw, vh, false)
             // Old smoothed corners are in pre-rotation frame coords — drop them.
-            for (const g of groups.values()) g.smooth = null
+            for (const g of groups.values()) {
+              g.smooth = null
+              g.hasPose = false
+            }
           }
           camera.aspect = vw / vh
           camera.updateProjectionMatrix()
@@ -475,6 +504,28 @@ export default function Viewer() {
                 const model = cloneSkinned(gltf.scene)
                 const size = fitModelToMarker(model)
                 fit.add(model)
+
+                // Add soft contact shadow under model onto the target marker plane
+                const shadow = createContactShadow(size.x, size.z)
+                const pz = Number(item.transform?.position?.[2] || 0)
+                shadow.position.set(0, -pz + 0.0015, 0)
+                fit.add(shadow)
+
+                // Enhance materials and textures with realistic IBL intensity and sRGB color space
+                model.traverse((child) => {
+                  if (child.isMesh) {
+                    child.frustumCulled = false
+                    const mats = Array.isArray(child.material) ? child.material : [child.material]
+                    mats.forEach((mat) => {
+                      if (!mat) return
+                      mat.envMapIntensity = 1.15
+                      if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace
+                      if (mat.emissiveMap) mat.emissiveMap.colorSpace = THREE.SRGBColorSpace
+                      mat.needsUpdate = true
+                    })
+                  }
+                })
+
                 group.modelReady = true
                 if (renderDebug()) {
                   const wp = new THREE.Vector3()
@@ -496,16 +547,14 @@ export default function Viewer() {
                   // Default to continuous repeat in the AR viewer so models loop smoothly
                   ctl.setLoop('repeat')
                   if (item.animation) {
-                    ctl.applySettings(item.animation)
-                    if (item.animation.loop === 'once') {
-                      ctl.setLoop('once')
-                    } else {
-                      ctl.setLoop('repeat')
-                    }
-                  } else {
-                    ctl.setLoop('repeat')
-                    ctl.play()
+                    ctl.applySettings({
+                      ...item.animation,
+                      loop: 'repeat',
+                      autoplay: true,
+                    })
                   }
+                  ctl.setLoop('repeat')
+                  ctl.play()
                   anims.push({ ctl, group, item })
                   if (!disposed) {
                     setAnimController((prev) => prev || ctl)
@@ -530,24 +579,48 @@ export default function Viewer() {
         let lastPoseLogAt = 0
         const clock = new THREE.Clock()
 
+        const _tempMat = new THREE.Matrix4()
+        const _targetPos = new THREE.Vector3()
+        const _targetQuat = new THREE.Quaternion()
+        const _targetScale = new THREE.Vector3()
+
         const applyDetection = (g, r, now) => {
           if (!g.anchor) return false
           const wasLocked = !!g.smooth && now - g.lastFound <= LOSS_GRACE_MS
+
+          if (wasLocked && g.smooth) {
+            // Reject sudden wild jump between consecutive frames to prevent ROI runaway drift
+            let maxJump = 0
+            for (let i = 0; i < 4; i++) {
+              const d = Math.hypot(r.corners[i][0] - g.smooth[i][0], r.corners[i][1] - g.smooth[i][1])
+              if (d > maxJump) maxJump = d
+            }
+            if (maxJump > 120) {
+              g.jumpCount = (g.jumpCount || 0) + 1
+              if (g.jumpCount < 3) return false
+              // Rapid camera motion detected over multiple frames: reset smooth corners to snap
+              g.smooth = null
+            } else {
+              g.jumpCount = 0
+            }
+          }
+
           g.smooth = smoothCorners(g.smooth, r.corners, SMOOTH_ALPHA)
+          // Pass video dimensions (NOT glCanvas which is scaled by DPR) so OpenCV K matches camera intrinsics
           const m = poseFromCorners(
             g.tracker.targetW,
             g.tracker.targetH,
             g.smooth,
-            glCanvas.width,
-            glCanvas.height,
-            60
+            video.videoWidth,
+            video.videoHeight,
+            50
           )
           if (!m) {
             if (renderDebug() && now - lastPoseLogAt > 2000) {
               lastPoseLogAt = now
               console.warn('[AR viewer] pose rejected', {
                 corners: g.smooth,
-                frame: [glCanvas.width, glCanvas.height],
+                frame: [video.videoWidth, video.videoHeight],
                 targetPx: [g.tracker.targetW, g.tracker.targetH],
                 modelReady: g.modelReady,
                 modelError: g.modelError,
@@ -555,8 +628,40 @@ export default function Viewer() {
             }
             return false
           }
-          g.anchor.matrix.fromArray(m)
-          g.anchor.updateMatrixWorld(true)
+
+          _tempMat.fromArray(m)
+          _tempMat.decompose(_targetPos, _targetQuat, _targetScale)
+
+          if (!g.targetPos) {
+            g.targetPos = new THREE.Vector3()
+            g.targetQuat = new THREE.Quaternion()
+            g.targetScale = new THREE.Vector3(1, 1, 1)
+          }
+          if (!g.posePos) {
+            g.posePos = new THREE.Vector3()
+            g.poseQuat = new THREE.Quaternion()
+            g.poseScale = new THREE.Vector3(1, 1, 1)
+            g.hasPose = false
+          }
+
+          if (!wasLocked || !g.hasPose) {
+            // First detection or re-acquired after loss: snap cleanly to the new pose
+            g.posePos.copy(_targetPos)
+            g.poseQuat.copy(_targetQuat)
+            g.poseScale.copy(_targetScale)
+            g.targetPos.copy(_targetPos)
+            g.targetQuat.copy(_targetQuat)
+            g.targetScale.copy(_targetScale)
+            g.anchor.matrix.compose(g.posePos, g.poseQuat, g.poseScale)
+            g.anchor.updateMatrixWorld(true)
+            g.hasPose = true
+          } else {
+            // Update tracking target for continuous 60/120 FPS render loop smoothing
+            g.targetPos.copy(_targetPos)
+            g.targetQuat.copy(_targetQuat)
+            g.targetScale.copy(_targetScale)
+          }
+
           g.anchor.visible = true
           g.lastFound = now
           if (renderDebug() && now - lastPoseLogAt > 2000) {
@@ -600,6 +705,7 @@ export default function Viewer() {
               anyFound = true
             } else if (now - g.lastFound > LOSS_GRACE_MS) {
               g.smooth = null
+              g.hasPose = false
               g.anchor.visible = false
             } else if (g.anchor.visible) {
               anyFound = true
@@ -612,11 +718,44 @@ export default function Viewer() {
           raf = requestAnimationFrame(loop)
           const dt = clock.getDelta()
           for (const entry of anims) {
-            if (entry.group?.anchor?.visible) {
-              entry.ctl.update(dt)
-            }
+            entry.ctl.update(dt)
           }
           for (const panel of mediaPanels) panel.update()
+
+          // Deadband pose smoothing right before rendering:
+          // the band must be wider than the residual corner noise, otherwise
+          // the pose alternately freezes and chases it (oscillation/shake).
+          for (const g of groups.values()) {
+            if (g.hasPose && g.anchor?.visible && g.targetPos) {
+              const posDist = g.posePos.distanceTo(g.targetPos)
+              const angleDist = g.poseQuat.angleTo(g.targetQuat)
+
+              if (posDist > 0.30 || angleDist > 0.50) {
+                // Large move or re-acquired: snap immediately
+                g.posePos.copy(g.targetPos)
+                g.poseQuat.copy(g.targetQuat)
+                g.poseScale.copy(g.targetScale)
+              } else if (posDist < 0.020 && angleDist < 0.040) {
+                // Deadband (~2cm, ~2.3 deg): freeze pose completely.
+                // Combined with the frozen corner quad, a stationary camera
+                // leaves the model perfectly still — no chase, no shake.
+              } else {
+                // Real motion: critically damped follow.
+                const speed = Math.max((posDist - 0.020) / 0.10, (angleDist - 0.040) / 0.15)
+                const lambda = Math.min(32, 6.0 + 26.0 * speed)
+                const factor = Math.min(1, 1 - Math.exp(-lambda * dt))
+                g.posePos.lerp(g.targetPos, factor)
+                g.poseQuat.slerp(g.targetQuat, factor)
+                g.poseScale.lerp(g.targetScale, factor)
+              }
+
+              if (posDist >= 0.020 || angleDist >= 0.040) {
+                g.anchor.matrix.compose(g.posePos, g.poseQuat, g.poseScale)
+                g.anchor.updateMatrixWorld(true)
+              }
+            }
+          }
+
           renderer.render(scene, camera)
 
           if (disposed || trackBusy || !video.videoWidth) return
@@ -717,6 +856,8 @@ export default function Viewer() {
           window.removeEventListener('resize', syncVideoSize)
           stream.getTracks().forEach((t) => t.stop())
           if (video.srcObject) video.srcObject = null
+          pmremGenerator.dispose()
+          envTexture.dispose()
           renderer.dispose()
           scene.traverse((o) => {
             o.geometry?.dispose?.()
