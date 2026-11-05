@@ -153,8 +153,11 @@ export function getQuadHomography(targetW, targetH, corners) {
 
 /**
  * Adaptive corner smoothing:
- * - When stationary (< 2.5px jitter), heavy damping eliminates high-frequency tremor.
- * - When moving quickly (> 15px displacement), alpha boosts up to 0.85 for lag-free tracking.
+ * - When stationary (< 2.5px jitter), the quad is frozen completely: the
+ *   pose decomposition amplifies a 1px corner wobble into a visible tilt
+ *   swing, so any residual creep here becomes model shake.
+ * - Slow drift gets only a gentle creep; responsiveness ramps up with
+ *   confirmed displacement and reaches near-instant for fast pans.
  * - If displaced over 100px (fast camera snap), snaps instantly.
  */
 export function smoothCorners(prev, next, baseAlpha = 0.35) {
@@ -164,13 +167,25 @@ export function smoothCorners(prev, next, baseAlpha = 0.35) {
     const d = Math.hypot(next[i][0] - prev[i][0], next[i][1] - prev[i][1])
     if (d > maxD) maxD = d
   }
-  if (maxD > 100) return next
-  let alpha = baseAlpha
-  if (maxD < 2.5) {
-    alpha = 0.12 + 0.08 * (maxD / 2.5)
-  } else if (maxD > 15) {
-    alpha = Math.min(0.85, baseAlpha + 0.45 * Math.min(1, (maxD - 15) / 25))
+  if (maxD > 120) return next
+
+  // Freeze the quad until motion is real, then follow it.
+  if (maxD < 2.5) return prev
+
+  let alpha
+  if (maxD < 6.0) {
+    // Genuine slow drift — creep gently, don't chase noise.
+    alpha = 0.06 + 0.10 * ((maxD - 2.5) / 3.5)
+  } else if (maxD < 20.0) {
+    // Handheld pan — firm damped follow.
+    alpha = 0.16 + 0.34 * ((maxD - 6.0) / 14.0)
+  } else if (maxD < 60.0) {
+    // Fast pan.
+    alpha = 0.50 + 0.36 * ((maxD - 20.0) / 40.0)
+  } else {
+    alpha = 0.94
   }
+
   return next.map((p, i) => [
     prev[i][0] + (p[0] - prev[i][0]) * alpha,
     prev[i][1] + (p[1] - prev[i][1]) * alpha,

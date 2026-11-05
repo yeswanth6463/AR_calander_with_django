@@ -90,6 +90,7 @@ function objectBounds(root) {
   const box = new THREE.Box3()
   root.traverse((obj) => {
     if (!obj.isMesh || !obj.geometry) return
+    if (obj.name === '__contact_shadow__') return
     if (obj.isSkinnedMesh) obj.skeleton?.update()
     obj.geometry.computeBoundingBox?.()
     const local = obj.geometry.boundingBox
@@ -98,6 +99,40 @@ function objectBounds(root) {
   })
   if (box.isEmpty()) box.setFromObject(root)
   return box
+}
+
+/** Soft ground contact shadow anchoring 3D models to the target surface. */
+export function createContactShadow(width = 0.5, depth = 0.5) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 128
+  canvas.height = 128
+  const ctx = canvas.getContext('2d')
+  const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 64)
+  grad.addColorStop(0, 'rgba(0, 0, 0, 0.75)')
+  grad.addColorStop(0.25, 'rgba(0, 0, 0, 0.48)')
+  grad.addColorStop(0.55, 'rgba(0, 0, 0, 0.16)')
+  grad.addColorStop(0.85, 'rgba(0, 0, 0, 0.03)')
+  grad.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, 128, 128)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  const sx = Math.max(Number(width) || 0.5, 0.2) * 1.35
+  const sz = Math.max(Number(depth) || 0.5, 0.2) * 1.35
+  const geo = new THREE.PlaneGeometry(sx, sz)
+  geo.rotateX(-Math.PI / 2)
+  const mat = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    opacity: 0.62,
+    depthWrite: false,
+    toneMapped: false,
+  })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.name = '__contact_shadow__'
+  mesh.position.set(0, 0.0015, 0)
+  mesh.renderOrder = 2
+  return mesh
 }
 
 /** Sit a GLB on the marker plane; identical in the editor and the live viewer. */

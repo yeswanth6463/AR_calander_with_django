@@ -1860,6 +1860,15 @@ html[data-theme='light'] .viewport-badge {
   font-size: 15px;
 }
 
+/* Floating animation panel when opened in AR Viewer */
+.viewer-root .anim-panel {
+  bottom: max(72px, calc(env(safe-area-inset-bottom) + 60px));
+  z-index: 20;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
 /* ==========================================================================
    Target Feature Points Preview Modal & Viewport Overlay (Vuforia / OpenCV Style)
    ========================================================================== */
