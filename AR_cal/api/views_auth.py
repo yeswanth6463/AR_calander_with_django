@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import ARExperience, ExperienceItem, Project, ProjectPublication, PublishedExperience, User
-from .serializer import _item_payload, build_scene_snapshot
+from .serializer import _item_payload, build_scene_snapshot, game_payload, project_extras
 
 
 def user_payload(user):
@@ -314,6 +314,8 @@ def publish_project(request, project_id):
         "name": project.name,
         "scene_count": len(scenes),
         "scenes": scenes,
+        "game": game_payload(project),
+        **project_extras(request, project),
     }
     publication.save()
 
@@ -401,6 +403,10 @@ def public_experience(request, public_id):
                 "scene_count": len(scenes),
                 "scene_ids": list(bundle.scene_ids or []),
                 "scenes": scenes,
+                "game": snapshot.get("game"),
+                "project_type": snapshot.get("project_type") or bundle.project.project_type,
+                "type_settings": snapshot.get("type_settings") or {},
+                "sounds": snapshot.get("sounds") or [],
             }
         )
 
@@ -498,6 +504,10 @@ def public_experience(request, public_id):
             "transform": top_transform,
             "item_count": len(items),
             "items": items,
+            "game": (snapshot or {}).get("game"),
+            "project_type": (snapshot or {}).get("project_type") or exp.project.project_type,
+            "type_settings": (snapshot or {}).get("type_settings") or {},
+            "sounds": (snapshot or {}).get("sounds") or [],
             "scene_count": 1 if items else 0,
             "scene_ids": [str(exp.id)],
             "scenes": [

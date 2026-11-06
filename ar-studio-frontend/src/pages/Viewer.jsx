@@ -7,21 +7,41 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import {
   ImageTracker,
   extractFrame,
+  grabGray,
   paddedRoiFromCorners,
+  validateProjectedQuad,
   noteTrackerTiming,
   releaseTrackerRuntime,
   getTrackerDiagnostics,
   TRACK_CONFIG,
 } from '../ar/tracker'
 import {
+  FlowTracker,
+  FLOW_CONFIG,
+  flowSupported,
+  quadFromH,
+  quadDistance,
+  releaseFlowRuntime,
+} from '../ar/flowTracker'
+import {
   poseFromHomography,
   poseTranslation,
-  smoothCorners,
+  filterCorners,
+  ONE_EURO,
+  ONE_EURO_FLOW,
+  verticalFovForFrame,
   getQuadHomography,
 } from '../ar/pose'
 import { attachContentToTargetAnchor, applyARItemTransform, fitModelToMarker, createContactShadow } from '../ar/sceneTransform'
 import { createAnimationController } from '../ar/animation'
 import { createMediaPanel } from '../ar/mediaPanel'
+import { isFlatMedia } from '../ar/anchors'
+import { createGameEngine } from '../ar/gameEngine'
+import { relUrl } from '../ar/contentLoader'
+import TrackingViewer from './TrackingViewer'
+import { createTapInteraction } from '../ar/interaction'
+import { playSound, runTapActions, tapActionsOf, usesScore } from '../ar/behaviors'
+import { describeGoal, formatTime, gameUsesScore, hasWon, isCollectible } from '../ar/game'
 import AnimationPanel from '../components/AnimationPanel'
 import { api } from '../api'
 
@@ -75,7 +95,11 @@ const waitForCv = () =>
   })
 
 const LOSS_GRACE_MS = 1200
-const SMOOTH_ALPHA = 0.32
+// While optical flow holds the target, re-run ORB this often to catch drift.
+const REDETECT_EVERY_TICKS = 12
+// Reseed flow when ORB disagrees by more than this fraction of the quad size.
+const DRIFT_FRAC = 0.02
+const DRIFT_MIN_PX = 5
 
 const playChime = () => {
   try {
@@ -184,9 +208,60 @@ const poseFromCorners = (targetW, targetH, corners, frameW, frameH, fovDeg) => {
   return poseFromHomography(arr, frameW, frameH, fovDeg, targetW)
 }
 
+/**
+ * Public viewer entry: loads the published experience once and hands it to
+ * the viewer for its project type (image target / face / object).
+ */
 export default function Viewer() {
   const { publicId } = useParams()
+  const [loaded, setLoaded] = useState({ id: null, exp: null, error: '' })
+
+  useEffect(() => {
+    let cancelled = false
+    api(`/public/${publicId}/`)
+      .then((exp) => !cancelled && setLoaded({ id: publicId, exp, error: '' }))
+      .catch((err) => !cancelled && setLoaded({ id: publicId, exp: null, error: err.message || 'Experience not found.' }))
+    return () => {
+      cancelled = true
+    }
+  }, [publicId])
+
+  const current = loaded.id === publicId ? loaded : { exp: null, error: '' }
+  const exp = current.exp
+  const loadError = current.error
+
+  if (loadError) {
+    return (
+      <div className="viewer-root">
+        <div className="viewer-error-overlay">
+          <div className="viewer-error-card">
+            <div className="error-icon">⚠️</div>
+            <div>{loadError}</div>
+            <Link to="/" className="btn btn-primary" style={{ marginTop: 16 }}>
+              Back to AR Studio
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
+  if (!exp) {
+    return (
+      <div className="viewer-root">
+        <div className="camstage-msg">loading experience…</div>
+      </div>
+    )
+  }
+  if (exp.project_type === 'face' || exp.project_type === 'object') {
+    return <TrackingViewer key={publicId} exp={exp} />
+  }
+  return <ImageViewer key={publicId} preloaded={exp} />
+}
+
+function ImageViewer({ preloaded }) {
+  const { publicId } = useParams()
   const videoRef = useRef(null)
+  const camRef = useRef(null)
   const glRef = useRef(null)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('loading experience…')
@@ -197,14 +272,27 @@ export default function Viewer() {
   const [animController, setAnimController] = useState(null)
   const [showAnimPanel, setShowAnimPanel] = useState(false)
   const alertTimerRef = useRef(null)
+  const [score, setScore] = useState(null) // null = this experience has no scoring
+  const [toast, setToast] = useState(null) // { text, key }
+  const toastTimerRef = useRef(null)
+  // Game mode (Project.game_settings, only when enabled on the published link)
+  const [game, setGame] = useState(null) // { settings, title, goalText }
+  const [gamePhase, setGamePhase] = useState(null) // 'intro' | 'playing' | 'won' | 'lost' | 'over'
+  const [timeLeft, setTimeLeft] = useState(null) // seconds, null = no clock
+  const [endText, setEndText] = useState('') // custom win/lose text from game logic
+  const gameApiRef = useRef(null) // { start() } — set by the viewer effect
 
   useEffect(() => {
     let disposed = false
     const groups = new Map()
     let cameraStream = null
     let stop = () => {
-      for (const g of groups.values()) g.tracker?.dispose?.()
+      for (const g of groups.values()) {
+        g.tracker?.dispose?.()
+        g.flow?.dispose?.()
+      }
       releaseTrackerRuntime()
+      releaseFlowRuntime()
       cameraStream?.getTracks().forEach((t) => t.stop())
     }
     // JS scroll-lock fallback for browsers without :has() support.
@@ -212,7 +300,7 @@ export default function Viewer() {
 
     ;(async () => {
       try {
-        const exp = await api(`/public/${publicId}/`)
+        const exp = preloaded || (await api(`/public/${publicId}/`))
         if (disposed) return
 
         setStatus('loading tracker…')
@@ -264,6 +352,7 @@ export default function Viewer() {
           if (disposed) return
           g.tracker = new ImageTracker()
           g.tracker.compile(targetImg)
+          g.flow = new FlowTracker()
           g.smooth = null
           g.lastFound = 0
         }
@@ -288,6 +377,13 @@ export default function Viewer() {
         await video.play()
 
         const glCanvas = glRef.current
+        // Frame-locked camera background: every tracked frame is drawn here and
+        // the model is rendered with that same frame's pose, so the model can't
+        // slide against a newer frame shown by the <video> element.
+        const camCanvas = camRef.current
+        const camCtx = camCanvas.getContext('2d', { alpha: false, willReadFrequently: true })
+        const useFlow = flowSupported()
+        if (renderDebug()) console.info('[AR viewer] optical flow', useFlow ? 'enabled' : 'unavailable → detection only')
         const dpr = Math.min(window.devicePixelRatio || 1, 2)
         const renderer = new THREE.WebGLRenderer({
           canvas: glCanvas,
@@ -361,15 +457,21 @@ export default function Viewer() {
             lastSyncW = vw
             lastSyncH = vh
             renderer.setSize(vw, vh, false)
+            camCanvas.width = vw
+            camCanvas.height = vh
             // Old smoothed corners are in pre-rotation frame coords — drop them.
             for (const g of groups.values()) {
               g.smooth = null
-              g.hasPose = false
+              g.cornerFilter = null
+              g.flow?.reset()
             }
           }
+          // Same intrinsics as poseFromHomography, or the model drifts off the marker.
+          camera.fov = verticalFovForFrame(vw, vh)
           camera.aspect = vw / vh
           camera.updateProjectionMatrix()
           applyCoverLayout(video, vw, vh)
+          applyCoverLayout(camCanvas, vw, vh)
           applyCoverLayout(glCanvas, vw, vh)
         }
         // `resize` fires on the video element when videoWidth/Height change
@@ -380,6 +482,188 @@ export default function Viewer() {
 
         const anims = []
         const mediaPanels = []
+
+        // Tap-to-interact: tapping a tracked model pops it and runs the
+        // item's tap behaviours (default: play/pause its animation). Also
+        // emits `ar-item-tap` on window for game logic.
+        const itemEntries = new Map() // item id -> { item, fit }
+        let scoreValue = 0
+        const gameSettings = exp.game?.enabled ? exp.game : null
+        if (usesScore(items) || gameUsesScore(gameSettings)) setScore(0)
+
+        // ---- Game loop: intro → playing → won / lost / over ----
+        let phase = gameSettings ? 'intro' : null
+        let deadline = 0 // performance.now() ms; 0 = clock not started
+        let gameTimer = 0
+        const setPhase = (next) => {
+          phase = next
+          if (!disposed) setGamePhase(next)
+        }
+        const endGame = (result, text = '') => {
+          if (phase !== 'playing') return
+          clearInterval(gameTimer)
+          gameTimer = 0
+          engine?.stop()
+          if (!disposed) setEndText(text)
+          setPhase(result)
+          playSound(result === 'won' ? 'success' : result === 'lost' ? 'fail' : 'chime')
+          try {
+            navigator.vibrate?.(result === 'won' ? [80, 50, 80, 50, 160] : 200)
+          } catch {
+            /* ignore */
+          }
+        }
+        const tickClock = () => {
+          if (phase !== 'playing' || !gameSettings.time_limit) return
+          // The clock starts on the first target lock, not while scanning.
+          if (!deadline) {
+            if (!lastTrackingState) return
+            deadline = performance.now() + gameSettings.time_limit * 1000
+          }
+          const left = (deadline - performance.now()) / 1000
+          if (!disposed) setTimeLeft(Math.max(0, left))
+          if (left <= 0) endGame(gameSettings.goal === 'none' ? 'over' : 'lost')
+        }
+        if (gameSettings) {
+          setGame({
+            settings: gameSettings,
+            title: exp.name || exp.project || 'AR Game',
+            goalText: describeGoal(gameSettings, items.filter(isCollectible).length),
+          })
+          setGamePhase('intro')
+          if (gameSettings.time_limit) setTimeLeft(gameSettings.time_limit)
+          gameApiRef.current = {
+            start: () => {
+              // Reset the board to its published starting state.
+              scoreValue = 0
+              if (!disposed) setScore(gameUsesScore(gameSettings) || usesScore(items) ? 0 : null)
+              for (const entry of itemEntries.values()) entry.fit.visible = !entry.item.behaviors?.start_hidden
+              deadline = 0
+              if (!disposed) setTimeLeft(gameSettings.time_limit || null)
+              clearInterval(gameTimer)
+              setPhase('playing')
+              if (gameSettings.time_limit) gameTimer = setInterval(tickClock, 200)
+              playSound('chime') // also unlocks audio on iOS (user gesture)
+              engine?.start()
+              if (lastTrackingState) engine?.emit('target_found')
+            },
+          }
+        }
+        const animOf = (item) => anims.find((a) => a.item === item)
+        const behaviorCtx = {
+          findItem: (id) => itemEntries.get(id) || null,
+          toggleAnimation: (item) => {
+            const entry = animOf(item)
+            if (!entry) return
+            entry.ctl.toggle()
+            if (!disposed) setAnimController(entry.ctl)
+          },
+          playAnimation: (item) => {
+            const entry = animOf(item)
+            if (!entry) return
+            entry.ctl.play()
+            if (!disposed) setAnimController(entry.ctl)
+          },
+          setVisible: (entry, visible) => {
+            entry.fit.visible = visible
+          },
+          addScore: (n) => {
+            scoreValue += n
+            if (!disposed) setScore(scoreValue)
+          },
+          playSound,
+          showMessage: (text) => {
+            if (disposed) return
+            setToast({ text, key: performance.now() })
+            if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+            toastTimerRef.current = setTimeout(() => {
+              if (!disposed) setToast(null)
+            }, 2200)
+          },
+        }
+        // ---- AR Game logic (rule builder + sandboxed script) ----
+        const soundCache = new Map()
+        const sounds = Array.isArray(exp.sounds) ? exp.sounds : []
+        const findEntry = (ref) => {
+          if (ref == null) return null
+          const key = String(ref)
+          const byId = itemEntries.get(key)
+          if (byId) return byId
+          const lower = key.toLowerCase()
+          for (const entry of itemEntries.values()) {
+            const names = [entry.item.name, entry.item.model?.name].filter(Boolean).map((n) => n.toLowerCase())
+            if (names.includes(lower)) return entry
+          }
+          return null
+        }
+        const logic = gameSettings?.logic
+        const engine =
+          gameSettings && logic
+            ? createGameEngine({
+                logic,
+                adapter: {
+                  findItem: findEntry,
+                  itemNames: () => [...itemEntries.values()].map((e) => e.item.name || e.item.model?.name || ''),
+                  setVisible: (entry, visible) => behaviorCtx.setVisible(entry, visible),
+                  toggleAnimation: (entry) => behaviorCtx.toggleAnimation(entry.item),
+                  playAnimation: (entry) => behaviorCtx.playAnimation(entry.item),
+                  getScore: () => scoreValue,
+                  addScore: (n) => behaviorCtx.addScore(n),
+                  setScore: (n) => {
+                    scoreValue = n
+                    if (!disposed) setScore(scoreValue)
+                  },
+                  playSound,
+                  playAssetSound: (ref) => {
+                    const lower = String(ref).toLowerCase()
+                    const sound = sounds.find((x) => x.id === ref || x.name?.toLowerCase() === lower)
+                    if (!sound) return false
+                    try {
+                      let audio = soundCache.get(sound.id)
+                      if (!audio) {
+                        audio = new Audio(relUrl(sound.url))
+                        audio.preload = 'auto'
+                        soundCache.set(sound.id, audio)
+                      }
+                      audio.currentTime = 0
+                      audio.play().catch(() => {})
+                    } catch {
+                      /* ignore */
+                    }
+                    return true
+                  },
+                  showMessage: (text) => behaviorCtx.showMessage(text),
+                  win: (text) => endGame('won', text),
+                  lose: (text) => endGame('lost', text),
+                  isPlaying: () => phase === 'playing',
+                },
+                onError: (message) => {
+                  console.warn('[AR game]', message)
+                  behaviorCtx.showMessage(message)
+                },
+              })
+            : null
+        if (engine) {
+          const ruleScores = (logic.rules || []).some((r) =>
+            (r.actions || []).some((a) => a.action === 'add_score' || a.action === 'set_score')
+          )
+          if (ruleScores || logic.script_enabled) setScore(0)
+        }
+
+        const tap = createTapInteraction({ root: glCanvas.parentElement, canvas: glCanvas, camera })
+        tap.onTap(({ item }) => {
+          try {
+            navigator.vibrate?.(25)
+          } catch {
+            /* ignore */
+          }
+          if (gameSettings && phase !== 'playing') return
+          const self = itemEntries.get(String(item.id))
+          if (self) runTapActions(tapActionsOf(item), { ...behaviorCtx, self })
+          engine?.emit('tap', { itemId: String(item.id), itemName: item.name || item.model?.name || '' })
+          if (gameSettings && hasWon(gameSettings, scoreValue, itemEntries.values())) endGame('won')
+          if (renderDebug()) console.info('[AR viewer] tap', item.id, item.model?.name, tapActionsOf(item))
+        })
         let pendingModels = items.length
         const doneOne = (_message) => {
           pendingModels--
@@ -457,6 +741,9 @@ export default function Viewer() {
           }
           applyARItemTransform(fit, transform)
           group.content.add(fit)
+          tap.register(fit, item, group.anchor)
+          if (item.id != null) itemEntries.set(String(item.id), { item, fit })
+          if (item.behaviors?.start_hidden) fit.visible = false
 
           const modelUrl = item.model?.url
           const modelPath = modelUrl ? rel(modelUrl) : ''
@@ -480,7 +767,7 @@ export default function Viewer() {
             continue
           }
 
-          if (['mp4', 'webm', 'gif'].includes(item.model.format)) {
+          if (isFlatMedia(item.model.format)) {
             createMediaPanel(modelPath, item.model.format)
               .then((panel) => {
                 if (disposed) {
@@ -507,6 +794,7 @@ export default function Viewer() {
 
                 // Add soft contact shadow under model onto the target marker plane
                 const shadow = createContactShadow(size.x, size.z)
+                shadow.userData.noTap = true
                 const pz = Number(item.transform?.position?.[2] || 0)
                 shadow.position.set(0, -pz + 0.0015, 0)
                 fit.add(shadow)
@@ -579,12 +867,7 @@ export default function Viewer() {
         let lastPoseLogAt = 0
         const clock = new THREE.Clock()
 
-        const _tempMat = new THREE.Matrix4()
-        const _targetPos = new THREE.Vector3()
-        const _targetQuat = new THREE.Quaternion()
-        const _targetScale = new THREE.Vector3()
-
-        const applyDetection = (g, r, now) => {
+        const applyDetection = (g, r, now, viaFlow = false) => {
           if (!g.anchor) return false
           const wasLocked = !!g.smooth && now - g.lastFound <= LOSS_GRACE_MS
 
@@ -605,7 +888,11 @@ export default function Viewer() {
             }
           }
 
-          g.smooth = smoothCorners(g.smooth, r.corners, SMOOTH_ALPHA)
+          // (Re)acquired → restart the filter so it snaps to the new quad.
+          if (!wasLocked || !g.smooth) g.cornerFilter = null
+          const filtered = filterCorners(g.cornerFilter, r.corners, now / 1000, viaFlow ? ONE_EURO_FLOW : ONE_EURO)
+          g.cornerFilter = filtered.state
+          g.smooth = filtered.corners
           // Pass video dimensions (NOT glCanvas which is scaled by DPR) so OpenCV K matches camera intrinsics
           const m = poseFromCorners(
             g.tracker.targetW,
@@ -613,7 +900,7 @@ export default function Viewer() {
             g.smooth,
             video.videoWidth,
             video.videoHeight,
-            50
+            camera.fov
           )
           if (!m) {
             if (renderDebug() && now - lastPoseLogAt > 2000) {
@@ -629,39 +916,11 @@ export default function Viewer() {
             return false
           }
 
-          _tempMat.fromArray(m)
-          _tempMat.decompose(_targetPos, _targetQuat, _targetScale)
-
-          if (!g.targetPos) {
-            g.targetPos = new THREE.Vector3()
-            g.targetQuat = new THREE.Quaternion()
-            g.targetScale = new THREE.Vector3(1, 1, 1)
-          }
-          if (!g.posePos) {
-            g.posePos = new THREE.Vector3()
-            g.poseQuat = new THREE.Quaternion()
-            g.poseScale = new THREE.Vector3(1, 1, 1)
-            g.hasPose = false
-          }
-
-          if (!wasLocked || !g.hasPose) {
-            // First detection or re-acquired after loss: snap cleanly to the new pose
-            g.posePos.copy(_targetPos)
-            g.poseQuat.copy(_targetQuat)
-            g.poseScale.copy(_targetScale)
-            g.targetPos.copy(_targetPos)
-            g.targetQuat.copy(_targetQuat)
-            g.targetScale.copy(_targetScale)
-            g.anchor.matrix.compose(g.posePos, g.poseQuat, g.poseScale)
-            g.anchor.updateMatrixWorld(true)
-            g.hasPose = true
-          } else {
-            // Update tracking target for continuous 60/120 FPS render loop smoothing
-            g.targetPos.copy(_targetPos)
-            g.targetQuat.copy(_targetQuat)
-            g.targetScale.copy(_targetScale)
-          }
-
+          // Apply the filtered pose directly: the video frame and the model
+          // update together, so the model stays glued to the marker instead
+          // of lagging/sliding behind it.
+          g.anchor.matrix.fromArray(m)
+          g.anchor.matrixWorldNeedsUpdate = true
           g.anchor.visible = true
           g.lastFound = now
           if (renderDebug() && now - lastPoseLogAt > 2000) {
@@ -696,22 +955,87 @@ export default function Viewer() {
           return true
         }
 
-        const matchAll = (frame, now, lockedIds) => {
-          let anyFound = false
-          for (const g of groups.values()) {
-            const locked = lockedIds.has(g)
-            const r = g.tracker.matchFrame(frame, { locked })
-            if (r.found && applyDetection(g, r, now)) {
-              anyFound = true
-            } else if (now - g.lastFound > LOSS_GRACE_MS) {
-              g.smooth = null
-              g.hasPose = false
-              g.anchor.visible = false
-            } else if (g.anchor.visible) {
-              anyFound = true
+        /**
+         * One tracking tick for one target group, on the captured frame `src`.
+         *   1. Optical flow (sub-pixel, frame-to-frame) when it holds the target.
+         *   2. ORB detection to acquire, recover, or periodically check drift
+         *      (ROI around the last quad first, full frame only when lost).
+         * Returns { found, corners, viaFlow }.
+         */
+        const trackGroup = (g, src, grab, getFullFrame, now) => {
+          const tw = g.tracker.targetW
+          const th = g.tracker.targetH
+          const locked = !!g.smooth && now - g.lastFound <= LOSS_GRACE_MS
+          g.ticks = (g.ticks || 0) + 1
+          let res = null
+          let viaFlow = false
+
+          if (grab && g.flow.active) {
+            const f = g.flow.track(grab.gray, grab.sx, grab.sy)
+            if (f.found) {
+              const corners = quadFromH(f.H, tw, th)
+              if (validateProjectedQuad(corners, src.width, src.height, tw, th).ok) {
+                res = { found: true, corners, H: f.H }
+                viaFlow = true
+              }
+            }
+            if (!viaFlow) g.flow.reset()
+          }
+
+          const needDetect = !viaFlow || g.ticks - (g.lastDetectTick || 0) >= REDETECT_EVERY_TICKS
+          if (needDetect) {
+            g.lastDetectTick = g.ticks
+            let det = null
+            const hint = res?.corners || (locked ? g.smooth : null)
+            const roi = hint ? paddedRoiFromCorners(hint, src.width, src.height) : null
+            if (roi) {
+              const fr = extractFrame(src, { roi })
+              try {
+                det = fr ? g.tracker.matchFrame(fr, { locked: true }) : null
+              } finally {
+                fr?.dispose()
+              }
+            }
+            if (!det?.found && !viaFlow) {
+              const full = getFullFrame()
+              det = full ? g.tracker.matchFrame(full, { locked }) : null
+            }
+            if (det?.found) {
+              if (!viaFlow) {
+                res = det
+                if (grab) g.flow.reseed(grab.gray, det.H, tw, th, grab.sx, grab.sy)
+              } else {
+                const edge = Math.hypot(res.corners[1][0] - res.corners[0][0], res.corners[1][1] - res.corners[0][1])
+                if (quadDistance(det.corners, res.corners) > Math.max(DRIFT_MIN_PX, DRIFT_FRAC * edge)) {
+                  // Flow drifted off the true target: trust detection, restart flow.
+                  res = det
+                  viaFlow = false
+                  g.flow.reseed(grab.gray, det.H, tw, th, grab.sx, grab.sy)
+                }
+              }
             }
           }
-          return anyFound
+
+          if (viaFlow) {
+            // Top up points lost to occlusion / leaving the frame, then advance.
+            if (g.flow.count < FLOW_CONFIG.reseedBelow) {
+              g.flow.seed(grab.gray, res.H, tw, th, grab.sx, grab.sy)
+            }
+            g.flow.commit(grab.gray)
+          }
+          return res?.found ? { ...res, viaFlow } : { found: false }
+        }
+
+        // Prefer one tracking tick per *new* camera frame.
+        let newFrame = true
+        let vfcHandle = 0
+        const hasVfc = typeof video.requestVideoFrameCallback === 'function'
+        if (hasVfc) {
+          const onVideoFrame = () => {
+            newFrame = true
+            vfcHandle = video.requestVideoFrameCallback(onVideoFrame)
+          }
+          vfcHandle = video.requestVideoFrameCallback(onVideoFrame)
         }
 
         const loop = () => {
@@ -721,80 +1045,50 @@ export default function Viewer() {
             entry.ctl.update(dt)
           }
           for (const panel of mediaPanels) panel.update()
-
-          // Deadband pose smoothing right before rendering:
-          // the band must be wider than the residual corner noise, otherwise
-          // the pose alternately freezes and chases it (oscillation/shake).
-          for (const g of groups.values()) {
-            if (g.hasPose && g.anchor?.visible && g.targetPos) {
-              const posDist = g.posePos.distanceTo(g.targetPos)
-              const angleDist = g.poseQuat.angleTo(g.targetQuat)
-
-              if (posDist > 0.30 || angleDist > 0.50) {
-                // Large move or re-acquired: snap immediately
-                g.posePos.copy(g.targetPos)
-                g.poseQuat.copy(g.targetQuat)
-                g.poseScale.copy(g.targetScale)
-              } else if (posDist < 0.020 && angleDist < 0.040) {
-                // Deadband (~2cm, ~2.3 deg): freeze pose completely.
-                // Combined with the frozen corner quad, a stationary camera
-                // leaves the model perfectly still — no chase, no shake.
-              } else {
-                // Real motion: critically damped follow.
-                const speed = Math.max((posDist - 0.020) / 0.10, (angleDist - 0.040) / 0.15)
-                const lambda = Math.min(32, 6.0 + 26.0 * speed)
-                const factor = Math.min(1, 1 - Math.exp(-lambda * dt))
-                g.posePos.lerp(g.targetPos, factor)
-                g.poseQuat.slerp(g.targetQuat, factor)
-                g.poseScale.lerp(g.targetScale, factor)
-              }
-
-              if (posDist >= 0.020 || angleDist >= 0.040) {
-                g.anchor.matrix.compose(g.posePos, g.poseQuat, g.poseScale)
-                g.anchor.updateMatrixWorld(true)
-              }
-            }
+          engine?.tick(dt)
+          if (phase === 'playing' && gameSettings.goal !== 'none' && hasWon(gameSettings, scoreValue, itemEntries.values())) {
+            endGame('won')
           }
+          tap.update(dt)
 
+          trackTick()
+          // Render AFTER tracking: the model is drawn with the pose of the
+          // exact frame now on the camera canvas.
           renderer.render(scene, camera)
+        }
 
+        const trackTick = () => {
           if (disposed || trackBusy || !video.videoWidth) return
           const now = performance.now()
-          if (now - lastTrackAt < 28) return
+          if (hasVfc ? !newFrame : now - lastTrackAt < 28) return
+          newFrame = false
           trackBusy = true
           lastTrackAt = now
           const t0 = performance.now()
           let anyFound = false
-          let frame = null
+          let grab = null
+          let fullFrame = null
           try {
-            const locked = [...groups.values()].filter(
-              (g) => g.smooth && now - g.lastFound <= LOSS_GRACE_MS
-            )
-            const lockedSet = new Set(locked)
+            if (camCanvas.width !== video.videoWidth || camCanvas.height !== video.videoHeight) syncVideoSize()
+            camCtx.drawImage(video, 0, 0, camCanvas.width, camCanvas.height)
+            if (useFlow) grab = grabGray(camCanvas, FLOW_CONFIG.width)
+            const getFullFrame = () => {
+              if (!fullFrame) fullFrame = extractFrame(camCanvas)
+              return fullFrame
+            }
 
-            if (groups.size === 1 && locked.length === 1) {
-              const roi = paddedRoiFromCorners(
-                locked[0].smooth,
-                video.videoWidth,
-                video.videoHeight
-              )
-              if (roi) {
-                frame = extractFrame(video, { roi })
-                const r = frame && locked[0].tracker.matchFrame(frame, { locked: true })
-                if (r?.found && applyDetection(locked[0], r, now)) {
-                  anyFound = true
-                } else {
-                  frame?.dispose()
-                  frame = extractFrame(video)
-                  anyFound = frame ? matchAll(frame, now, lockedSet) : false
-                }
-              } else {
-                frame = extractFrame(video)
-                anyFound = frame ? matchAll(frame, now, lockedSet) : false
+            for (const g of groups.values()) {
+              const r = trackGroup(g, camCanvas, grab, getFullFrame, now)
+              if (r.found && applyDetection(g, r, now, r.viaFlow)) {
+                anyFound = true
+              } else if (now - g.lastFound > LOSS_GRACE_MS) {
+                g.smooth = null
+                g.cornerFilter = null
+                g.flow.reset()
+                g.anchor.visible = false
+              } else if (g.anchor.visible) {
+                anyFound = true
               }
-            } else {
-              frame = extractFrame(video)
-              anyFound = frame ? matchAll(frame, now, lockedSet) : false
             }
 
             if (!anyFound && !acquireStartedAt) acquireStartedAt = now
@@ -802,6 +1096,7 @@ export default function Viewer() {
 
             if (anyFound !== lastTrackingState) {
               lastTrackingState = anyFound
+              engine?.emit(anyFound ? 'target_found' : 'target_lost')
               if (!disposed) {
                 setTargetFound(anyFound)
                 if (anyFound) {
@@ -835,7 +1130,8 @@ export default function Viewer() {
             }
             noteTrackerTiming(performance.now() - t0, anyFound ? 'tracking' : 'scanning')
           } finally {
-            frame?.dispose()
+            grab?.dispose()
+            fullFrame?.dispose()
             trackBusy = false
           }
         }
@@ -844,14 +1140,25 @@ export default function Viewer() {
         stop = () => {
           cancelAnimationFrame(raf)
           raf = 0
+          if (hasVfc && vfcHandle) video.cancelVideoFrameCallback?.(vfcHandle)
           trackBusy = false
           if (alertTimerRef.current) clearTimeout(alertTimerRef.current)
+          if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+          clearInterval(gameTimer)
+          gameApiRef.current = null
           for (const entry of anims) entry.ctl.dispose()
           anims.length = 0
           for (const panel of mediaPanels) panel.dispose()
           mediaPanels.length = 0
-          for (const g of groups.values()) g.tracker?.dispose?.()
+          tap.dispose()
+          engine?.dispose()
+          for (const audio of soundCache.values()) audio.pause()
+          for (const g of groups.values()) {
+            g.tracker?.dispose?.()
+            g.flow?.dispose?.()
+          }
           releaseTrackerRuntime()
+          releaseFlowRuntime()
           video.removeEventListener('resize', syncVideoSize)
           window.removeEventListener('resize', syncVideoSize)
           stream.getTracks().forEach((t) => t.stop())
@@ -878,11 +1185,12 @@ export default function Viewer() {
       stop()
       document.body.classList.remove('viewer-mode')
     }
-  }, [publicId])
+  }, [publicId, preloaded])
 
   return (
     <div className="viewer-root">
       <video ref={videoRef} className="viewer-camera" autoPlay muted playsInline />
+      <canvas ref={camRef} className="viewer-camera-frame" />
       <canvas ref={glRef} className="gl" />
       <Link to="/" className="viewer-back">← AR Studio</Link>
 
@@ -907,6 +1215,62 @@ export default function Viewer() {
             alt="Scanning target"
             className="ar-scanner-img"
           />
+        </div>
+      )}
+
+      {/* Game HUD: score counter, clock, tap messages */}
+      {(score !== null || (gamePhase === 'playing' && timeLeft !== null)) && !error && (
+        <div className="viewer-score" aria-live="polite">
+          {score !== null && (
+            <>
+              <span className="viewer-score-label">Score</span>
+              <span key={score} className="viewer-score-value">
+                {score}
+                {game?.settings.goal === 'score' && (
+                  <span className="viewer-score-goal">/{game.settings.target_score}</span>
+                )}
+              </span>
+            </>
+          )}
+          {gamePhase === 'playing' && timeLeft !== null && (
+            <span className={`viewer-clock ${timeLeft <= 10 ? 'low' : ''}`}>⏱ {formatTime(timeLeft)}</span>
+          )}
+        </div>
+      )}
+      {game && gamePhase && gamePhase !== 'playing' && isReady && !error && (
+        <div className="viewer-game-overlay">
+          <div className={`viewer-game-card ${gamePhase}`}>
+            <div className="viewer-game-icon" aria-hidden="true">
+              {gamePhase === 'intro' ? '🎮' : gamePhase === 'won' ? '🏆' : gamePhase === 'lost' ? '⌛' : '🏁'}
+            </div>
+            <h2 className="viewer-game-title">
+              {gamePhase === 'intro'
+                ? game.title
+                : gamePhase === 'won'
+                  ? endText || game.settings.win_message || 'You win!'
+                  : gamePhase === 'lost'
+                    ? endText || game.settings.lose_message || "Time's up!"
+                    : "Time's up!"}
+            </h2>
+            {gamePhase === 'intro' && (
+              <>
+                {game.settings.intro && <p className="viewer-game-text">{game.settings.intro}</p>}
+                <p className="viewer-game-goal">{game.goalText}</p>
+                <p className="viewer-game-hint">Point your camera at the image, then tap the models.</p>
+              </>
+            )}
+            {gamePhase !== 'intro' && score !== null && (
+              <p className="viewer-game-goal">Score: {score}</p>
+            )}
+            <button type="button" className="btn primary viewer-game-btn" onClick={() => gameApiRef.current?.start()}>
+              {gamePhase === 'intro' ? 'Start' : 'Play again'}
+            </button>
+          </div>
+        </div>
+      )}
+      {toast && !error && (
+        <div key={toast.key} className="viewer-toast" role="status">
+          {toast.text}
         </div>
       )}
 

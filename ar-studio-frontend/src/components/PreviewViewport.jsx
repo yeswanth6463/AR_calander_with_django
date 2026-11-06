@@ -5,6 +5,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { createAnimationController } from '../ar/animation'
 import { createMediaPanel } from '../ar/mediaPanel'
+import { isFlatMedia } from '../ar/anchors'
 import {
   applyARItemTransform,
   eulerDegreesFromObject,
@@ -874,7 +875,7 @@ export default function PreviewViewport({
         continue
       }
 
-      const isMedia = ['mp4', 'webm', 'gif'].includes(asset.format)
+      const isMedia = isFlatMedia(asset.format)
       const stale = () => groupsRef.current.get(entry.id) !== modelGroup
 
       if (isMedia) {

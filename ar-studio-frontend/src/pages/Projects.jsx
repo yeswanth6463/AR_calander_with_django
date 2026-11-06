@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
+import { projectTypeMeta } from '../ar/anchors'
+import NewProjectWizard from '../components/NewProjectWizard'
 
 export default function Projects() {
   const [projects, setProjects] = useState(null)
   const [links, setLinks] = useState([])
   const [error, setError] = useState('')
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const navigate = useNavigate()
 
   const load = async () => {
     try {
@@ -25,20 +26,11 @@ export default function Projects() {
     load()
   }, [])
 
-  const create = async (e) => {
-    e.preventDefault()
-    setBusy(true)
-    setError('')
-    try {
-      await api('/projects/', { method: 'POST', body: { name, description } })
-      setName('')
-      setDescription('')
-      await load()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
+  // Wizard errors are shown inside the wizard (it re-throws).
+  const create = async (body) => {
+    const project = await api('/projects/', { method: 'POST', body })
+    setWizardOpen(false)
+    navigate(`/projects/${project.id}`)
   }
 
   const remove = async (id) => {
@@ -84,14 +76,18 @@ export default function Projects() {
         </section>
       )}
 
-      <form className="card" onSubmit={create}>
-        <h2>New project</h2>
-        <div className="row">
-          <input required placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} style={{ maxWidth: 280 }} />
-          <input placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
-          <button className="btn" disabled={busy}>{busy ? '…' : 'Create'}</button>
+      <section className="card new-project-card">
+        <div className="grow">
+          <h2>New project</h2>
+          <p className="muted" style={{ margin: 0 }}>
+            AR experience, AR game, face tracking or object detection — answer a few questions to set it up.
+          </p>
         </div>
-      </form>
+        <button className="btn primary" onClick={() => setWizardOpen(true)}>
+          + New project
+        </button>
+      </section>
+      {wizardOpen && <NewProjectWizard onCreate={create} onCancel={() => setWizardOpen(false)} />}
 
       {projects === null ? (
         <p className="muted">Loading…</p>
@@ -102,7 +98,7 @@ export default function Projects() {
               <ProjectCard key={p.id} project={p} onDelete={() => remove(p.id)} />
             ))}
           </div>
-          {projectList.length === 0 && <p className="muted">No projects yet — create one above.</p>}
+          {projectList.length === 0 && <p className="muted">No projects yet — click “New project” to start.</p>}
         </>
       )}
     </div>
@@ -110,8 +106,12 @@ export default function Projects() {
 }
 
 function ProjectCard({ project, onDelete }) {
+  const type = projectTypeMeta(project.project_type)
   return (
     <div className="card">
+      <div className="project-type-badge">
+        <span aria-hidden="true">{type.icon}</span> {type.title}
+      </div>
       <h2>
         <Link to={`/projects/${project.id}`}>{project.name}</Link>
       </h2>

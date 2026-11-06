@@ -4,6 +4,8 @@ from django.contrib.auth.models import AbstractUser
 from django.utils.text import slugify
 import uuid
 
+from .anchors import ANCHOR_TYPES, PROJECT_TYPES
+
 class User(AbstractUser):
     email = models.EmailField(unique=True)
     phone_number = models.CharField(
@@ -35,6 +37,30 @@ class Project(models.Model):
     name = models.CharField(max_length=150)
     slug = models.SlugField(max_length=180, unique=True, blank=True)
     description = models.TextField(blank=True)
+    project_type = models.CharField(
+        max_length=20,
+        choices=PROJECT_TYPES,
+        default="image_ar",
+        help_text="Chosen in the new-project wizard; fixed after creation.",
+    )
+    type_settings = models.JSONField(
+        blank=True,
+        null=True,
+        help_text="Viewer options for face / object projects (from the wizard).",
+    )
+    game_logic = models.JSONField(
+        blank=True,
+        null=True,
+        help_text="AR Game rule builder rules, variables and optional script.",
+    )
+    game_settings = models.JSONField(
+        blank=True,
+        null=True,
+        help_text=(
+            "AR game rules for the published link: goal (none/score/collect_all), "
+            "target_score, time_limit (s), intro/win/lose messages."
+        ),
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -97,6 +123,13 @@ class ModelAsset(models.Model):
         ("mp4", "MP4 video"),
         ("webm", "WebM video"),
         ("gif", "GIF"),
+        ("png", "PNG image"),
+        ("jpg", "JPG image"),
+        ("jpeg", "JPEG image"),
+        ("webp", "WebP image"),
+        ("mp3", "MP3 sound"),
+        ("wav", "WAV sound"),
+        ("ogg", "OGG sound"),
     ]
 
     id = models.UUIDField(
@@ -211,6 +244,16 @@ class ExperienceItem(models.Model):
         TargetImage,
         on_delete=models.PROTECT,
         related_name="experience_items",
+        null=True,
+        blank=True,
+        help_text="Required for image anchors; empty for face / object anchors.",
+    )
+    anchor_type = models.CharField(max_length=10, choices=ANCHOR_TYPES, default="image")
+    anchor_value = models.CharField(
+        max_length=80,
+        blank=True,
+        default="",
+        help_text="Face point (e.g. eyes) or object label (e.g. cup).",
     )
     model_asset = models.ForeignKey(
         ModelAsset,
@@ -235,6 +278,14 @@ class ExperienceItem(models.Model):
         blank=True,
         null=True,
         help_text="Playback settings: clips, loop, speed, autoplay.",
+    )
+    behaviors = models.JSONField(
+        blank=True,
+        null=True,
+        help_text=(
+            "Interaction rules for the AR viewer: "
+            '{"start_hidden": bool, "on_tap": [{"action": str, "value": any}]}.'
+        ),
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
