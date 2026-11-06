@@ -3,6 +3,12 @@ import { createPortal } from 'react-dom'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 import AnimationPanel from '../components/AnimationPanel'
+import AssetsPanel from '../components/AssetsPanel'
+import LogicEditor from '../components/LogicEditor'
+import TrackingStudio from './TrackingStudio'
+import { isAudio, isPlaceable, projectTypeMeta } from '../ar/anchors'
+import BehaviorsPanel from '../components/BehaviorsPanel'
+import GameSettingsPanel from '../components/GameSettingsPanel'
 import PreviewViewport from '../components/PreviewViewport'
 import TargetFeatureModal from '../components/TargetFeatureModal'
 
@@ -160,7 +166,11 @@ export default function ProjectDetail() {
       const isRealItem = (exp?.items || []).some((item) => item.id === itemId)
       const endpoint = isRealItem ? `/items/${itemId}/` : `/experiences/${selectedId}/`
       api(endpoint, { method: 'PATCH', body: values })
-        .then(() => setNotice(values.animation ? 'Animation saved.' : 'Transform saved.'))
+        .then(() =>
+          setNotice(
+            'behaviors' in values ? 'Tap actions saved.' : values.animation ? 'Animation saved.' : 'Transform saved.'
+          )
+        )
         .catch((err) => setError(err.message))
     },
     [selectedId]
@@ -231,13 +241,28 @@ export default function ProjectDetail() {
 
   if (error && !project) return <div className="error-box">{error}</div>
   if (!project) return <p className="muted center">Loading…</p>
+  if (project.project_type === 'face' || project.project_type === 'object') {
+    return (
+      <TrackingStudio
+        project={project}
+        assets={assets}
+        experiences={experiences}
+        reload={load}
+        error={error}
+        notice={notice}
+        onError={setError}
+        onNotice={setNotice}
+      />
+    )
+  }
+  const isGame = project.project_type === 'game'
 
   const breadcrumb = (
     <>
       <Link to="/" className="studio-back">Projects</Link>
       <span className="studio-crumb" aria-hidden="true">/</span>
       <h1>{project.name}</h1>
-      <span className="badge">{project.slug}</span>
+      <span className="badge">{projectTypeMeta(project.project_type).icon} {projectTypeMeta(project.project_type).title}</span>
     </>
   )
   const status = (
@@ -277,6 +302,8 @@ export default function ProjectDetail() {
               onError={setError}
               onNotice={setNotice}
               selectedId={selectedItem?.model_asset}
+              allowAudio={isGame}
+              title={isGame ? 'Game assets' : 'Models & Media'}
             />
           </div>
           <div className="side-dock">
@@ -349,6 +376,18 @@ export default function ProjectDetail() {
               ))
             }}
             publicationSlug={project?.publication_slug || ''}
+            project={project}
+            onSaveLogic={async (game_logic) => {
+              const saved = await api(`/projects/${id}/`, { method: 'PATCH', body: { game_logic } })
+              setProject((current) => (current ? { ...current, game_logic: saved.game_logic } : current))
+              setNotice('Game logic saved.')
+            }}
+            onSaveGame={(game_settings) => {
+              setProject((current) => (current ? { ...current, game_settings } : current))
+              api(`/projects/${id}/`, { method: 'PATCH', body: { game_settings } })
+                .then(() => setNotice('Game settings saved.'))
+                .catch((err) => setError(err.message))
+            }}
           />
         </aside>
       </div>
@@ -492,100 +531,6 @@ function TargetsPanel({ projectId, targets, reload, onError, onNotice, selectedI
   )
 }
 
-function AssetsPanel({ projectId, assets, reload, onError, onNotice, selectedId }) {
-  const [busy, setBusy] = useState(false)
-  const [expanded, setExpanded] = useState(true)
-
-  const upload = async (e) => {
-    const files = Array.from(e.target.files || [])
-    if (!files.length) return
-    setBusy(true)
-    onError('')
-    try {
-      for (const file of files) {
-        const ext = file.name.split('.').pop().toLowerCase()
-        if (!['glb', 'gltf', 'mp4', 'webm', 'gif'].includes(ext)) {
-          throw new Error(`${file.name}: use .glb, .gltf, .mp4, .webm, or .gif`)
-        }
-        const fd = new FormData()
-        fd.append('project', projectId)
-        fd.append('name', file.name.replace(/\.[^.]+$/, ''))
-        fd.append('model_file', file)
-        fd.append('format', ext)
-        await api('/assets/', { method: 'POST', formData: fd })
-      }
-      onNotice(`Uploaded ${files.length} asset${files.length > 1 ? 's' : ''}.`)
-      e.target.value = ''
-      await reload()
-    } catch (err) {
-      onError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const remove = async (assetId, e) => {
-    e?.stopPropagation?.()
-    e?.preventDefault?.()
-    if (!confirm('Delete this model? Scene items that use it will be removed.')) return
-    onError('')
-    try {
-      await api(`/assets/${assetId}/`, { method: 'DELETE' })
-      onNotice('Model deleted.')
-      await reload()
-    } catch (err) {
-      onError(err.message)
-    }
-  }
-
-  return (
-    <div className="panel-section">
-      <div className="panel-head">
-        <button
-          className="panel-toggle"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          <h2>Models &amp; Media</h2>
-          <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
-        </button>
-        <label className={`btn small ${busy ? 'ghost' : ''}`}>
-          {busy ? '…' : '+ Upload'}
-          <input type="file" accept=".glb,.gltf,.mp4,.webm,.gif" multiple hidden onChange={upload} disabled={busy} />
-        </label>
-      </div>
-      {expanded && (
-        <>
-          {assets.length === 0 && (
-            <p className="muted small-text">Upload 3D models (.glb/.gltf) or animated media (.mp4/.webm/.gif).</p>
-          )}
-          <div className="tree-list">
-            {assets.map((a) => (
-              <div key={a.id} className={`tree-row ${selectedId === a.id ? 'active' : ''}`}>
-                <span className="tree-ico">{['mp4', 'webm', 'gif'].includes(a.format) ? '▶' : '◆'}</span>
-                <span className="tree-label">
-                  <span className="name">{a.name}</span>
-                  <span className="tiny muted">{a.format.toUpperCase()}</span>
-                </span>
-                <div className="item-actions">
-                  <button
-                    type="button"
-                    className="btn ghost small"
-                    title="Delete model"
-                    onClick={(e) => remove(a.id, e)}
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
 function InspectorPanel({
   projectId,
   targets,
@@ -607,7 +552,20 @@ function InspectorPanel({
   onTogglePublish,
   onToggleAll,
   publicationSlug = '',
+  project = null,
+  onSaveGame,
+  onSaveLogic,
 }) {
+  const [logicOpen, setLogicOpen] = useState(false)
+  const isGame = project?.project_type === 'game'
+  const allItems = experiences.flatMap((exp) => exp.items || [])
+  const itemLabel = (item) => item.name || assets.find((a) => a.id === item.model_asset)?.name || 'Model'
+  const logicItems = allItems.map((item) => ({
+    id: item.id,
+    name: itemLabel(item),
+    label: `${itemLabel(item)} · ${targets.find((t) => t.id === item.target_image)?.name || 'Marker'}`,
+  }))
+  const soundAssets = assets.filter(isAudio).map((a) => ({ id: a.id, name: a.name }))
   const [targetId, setTargetId] = useState('')
   const [assetId, setAssetId] = useState('')
   const [expName, setExpName] = useState('')
@@ -814,7 +772,7 @@ function InspectorPanel({
             </select>
             <select required value={assetId} onChange={(e) => setAssetId(e.target.value)}>
               <option value="">Select 3D model or media…</option>
-              {assets.map((a) => (
+              {assets.filter(isPlaceable).map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
                 </option>
@@ -961,6 +919,70 @@ function InspectorPanel({
             itemId={selectedItemId}
             step={0.05}
           />
+        </div>
+      )}
+
+      {selectedItem && (selected?.items || []).some((item) => item.id === selectedItem.id) && (
+        <div className="panel-section">
+          <div className="panel-head">
+            <div className="transform-title-wrap">
+              <h2>Tap actions</h2>
+              <span className="tiny muted">What happens when a viewer taps this model</span>
+            </div>
+          </div>
+          <BehaviorsPanel
+            key={selectedItem.id}
+            behaviors={selectedItem.behaviors}
+            otherItems={experiences
+              .flatMap((exp) => exp.items || [])
+              .filter((item) => item.id !== selectedItem.id)
+              .map((item) => {
+                const assetName = assets.find((a) => a.id === item.model_asset)?.name || 'Model'
+                const targetName = targets.find((t) => t.id === item.target_image)?.name || 'Marker'
+                return { id: item.id, label: `${item.name || assetName} · ${targetName}` }
+              })}
+            onSave={(behaviors) => onTransformChange(selectedItem.id, { behaviors }, true)}
+          />
+        </div>
+      )}
+
+      {project && (
+        <div className="panel-section">
+          <div className="panel-head">
+            <div className="transform-title-wrap">
+              <h2>Game</h2>
+              <span className="tiny muted">Score, goal and timer for the published link</span>
+            </div>
+          </div>
+          <GameSettingsPanel
+            key={project.id}
+            settings={project.game_settings}
+            items={allItems}
+            onSave={onSaveGame}
+            forceEnabled={isGame}
+          />
+          {isGame && (
+            <div className="logic-summary">
+              <div className="tiny muted">
+                {(project.game_logic?.rules || []).length} rule{(project.game_logic?.rules || []).length === 1 ? '' : 's'}
+                {' · '}
+                {(project.game_logic?.variables || []).length} variable{(project.game_logic?.variables || []).length === 1 ? '' : 's'}
+                {' · '}script {project.game_logic?.script_enabled ? 'on' : 'off'}
+              </div>
+              <button type="button" className="btn small add-wide" onClick={() => setLogicOpen(true)}>
+                ⚙ Edit game logic
+              </button>
+            </div>
+          )}
+          {logicOpen && (
+            <LogicEditor
+              logic={project.game_logic}
+              items={logicItems}
+              sounds={soundAssets}
+              onSave={onSaveLogic}
+              onClose={() => setLogicOpen(false)}
+            />
+          )}
         </div>
       )}
 

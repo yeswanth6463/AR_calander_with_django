@@ -18,7 +18,10 @@ const waitFor = (element, event, errorEvent, message) =>
     element.addEventListener(errorEvent, onError, { once: true })
   })
 
+const STILL_IMAGE_FORMATS = ['png', 'jpg', 'jpeg', 'webp']
+
 export async function createMediaPanel(url, format) {
+  if (STILL_IMAGE_FORMATS.includes(format)) return createImagePanel(url)
   const isGif = format === 'gif'
   let source
   let canvas
@@ -85,6 +88,36 @@ export async function createMediaPanel(url, format) {
     },
     dispose: () => {
       disposeSource()
+      geometry.dispose()
+      material.dispose()
+      texture.dispose()
+    },
+  }
+}
+
+async function createImagePanel(url) {
+  const image = new Image()
+  image.crossOrigin = 'anonymous'
+  const loaded = waitFor(image, 'load', 'error', 'Could not load image')
+  image.src = url
+  await loaded
+  const texture = new THREE.Texture(image)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.needsUpdate = true
+  const aspect = image.naturalWidth && image.naturalHeight ? image.naturalWidth / image.naturalHeight : 1
+  const geometry = new THREE.PlaneGeometry(0.5, 0.5 / aspect)
+  const material = new THREE.MeshBasicMaterial({
+    map: texture,
+    side: THREE.DoubleSide,
+    transparent: true, // PNG / WebP cut-outs
+    alphaTest: 0.02,
+    toneMapped: false,
+  })
+  const mesh = new THREE.Mesh(geometry, material)
+  return {
+    mesh,
+    update: () => {},
+    dispose: () => {
       geometry.dispose()
       material.dispose()
       texture.dispose()

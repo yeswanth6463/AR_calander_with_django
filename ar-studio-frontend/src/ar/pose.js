@@ -15,14 +15,12 @@ const mul3 = (A, B) => {
 const col = (M, i) => [M[i], M[3 + i], M[6 + i]]
 
 const norm = (v) => Math.hypot(v[0], v[1], v[2])
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const cross = (a, b) => [
   a[1] * b[2] - a[2] * b[1],
   a[2] * b[0] - a[0] * b[2],
   a[0] * b[1] - a[1] * b[0],
 ]
 const scale = (v, s) => [v[0] * s, v[1] * s, v[2] * s]
-const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 const normalize = (v) => {
   const n = norm(v)
   return n < 1e-9 ? [1, 0, 0] : scale(v, 1 / n)
@@ -68,8 +66,14 @@ export function poseFromHomography(H, frameW, frameH, fovDeg, targetW = 1) {
     r1 = scale(r1, s)
     r2 = scale(r2, s)
     t = scale(t, s)
-    const R1 = normalize(r1)
-    const R2 = normalize(sub(r2, scale(R1, dot(R1, r2))))
+    // Symmetric orthonormalization: split the error evenly between r1 and r2.
+    // Gram-Schmidt (fix r1, bend r2) pushes all noise into one axis, which
+    // shows up as a lopsided wobble of the model.
+    const c = normalize([r1[0] + r2[0], r1[1] + r2[1], r1[2] + r2[2]])
+    const d = normalize(cross(c, cross(r1, r2)))
+    const k = Math.SQRT1_2
+    const R1 = [(c[0] + d[0]) * k, (c[1] + d[1]) * k, (c[2] + d[2]) * k]
+    const R2 = [(c[0] - d[0]) * k, (c[1] - d[1]) * k, (c[2] - d[2]) * k]
     const R3 = cross(R1, R2)
     return { R1, R2, R3, t }
   }
@@ -152,7 +156,65 @@ export function getQuadHomography(targetW, targetH, corners) {
 }
 
 /**
- * Adaptive corner smoothing:
+ * Focal length (px) for a camera frame, assuming a typical phone/webcam
+ * field of view across the LONG edge. Using a fixed vertical FOV on the
+ * frame height made portrait frames very telephoto (f ≈ 1.4× too large),
+ * which turns small homography noise into big tilt swings.
+ */
+export const LONG_EDGE_FOV_DEG = 63
+export function focalForFrame(frameW, frameH, longEdgeFovDeg = LONG_EDGE_FOV_DEG) {
+  return Math.max(frameW, frameH) / 2 / Math.tan((longEdgeFovDeg * Math.PI) / 360)
+}
+/** Vertical FOV (deg) matching focalForFrame — feed to both pose + THREE camera. */
+export function verticalFovForFrame(frameW, frameH, longEdgeFovDeg = LONG_EDGE_FOV_DEG) {
+  const f = focalForFrame(frameW, frameH, longEdgeFovDeg)
+  return (2 * Math.atan(frameH / 2 / f) * 180) / Math.PI
+}
+
+/**
+ * One Euro filter over the 4 tracked corners (8 values).
+ * Heavy smoothing when the quad is nearly still (kills keypoint jitter),
+ * low lag when it moves fast. No freeze/deadband, so there is no
+ * stick-then-jump motion.
+ * `state` is null on (re)acquire; returns { state, corners }.
+ */
+export const ONE_EURO = { minCutoff: 0.9, beta: 0.012, dCutoff: 1.2 }
+// Optical-flow corners are sub-pixel and temporally coherent: smooth less, lag less.
+export const ONE_EURO_FLOW = { minCutoff: 2.2, beta: 0.02, dCutoff: 1.2 }
+const lpAlpha = (cutoff, dt) => {
+  const tau = 1 / (2 * Math.PI * cutoff)
+  return 1 / (1 + tau / dt)
+}
+export function filterCorners(state, corners, tSec, opts = ONE_EURO) {
+  const x = corners.flat()
+  if (!state) {
+    return { state: { x, dx: new Array(8).fill(0), t: tSec }, corners: corners.map((c) => [c[0], c[1]]) }
+  }
+  const dt = Math.min(Math.max(tSec - state.t, 1 / 240), 0.25)
+  const aD = lpAlpha(opts.dCutoff, dt)
+  const outX = new Array(8)
+  const outDx = new Array(8)
+  for (let i = 0; i < 8; i++) {
+    const rawDx = (x[i] - state.x[i]) / dt
+    const dxHat = state.dx[i] + aD * (rawDx - state.dx[i])
+    const cutoff = opts.minCutoff + opts.beta * Math.abs(dxHat)
+    const a = lpAlpha(cutoff, dt)
+    outX[i] = state.x[i] + a * (x[i] - state.x[i])
+    outDx[i] = dxHat
+  }
+  return {
+    state: { x: outX, dx: outDx, t: tSec },
+    corners: [
+      [outX[0], outX[1]],
+      [outX[2], outX[3]],
+      [outX[4], outX[5]],
+      [outX[6], outX[7]],
+    ],
+  }
+}
+
+/**
+ * Adaptive corner smoothing (legacy, unused by the viewer):
  * - When stationary (< 2.5px jitter), the quad is frozen completely: the
  *   pose decomposition amplifies a 1px corner wobble into a visible tilt
  *   swing, so any residual creep here becomes model shake.

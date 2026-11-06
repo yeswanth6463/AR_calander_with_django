@@ -470,8 +470,9 @@ export const extractFrame = (video, frameFeaturesOrOpts) => {
     typeof frameFeaturesOrOpts === 'number'
       ? { frameFeatures: frameFeaturesOrOpts }
       : frameFeaturesOrOpts || {}
-  const vw = video.videoWidth
-  const vh = video.videoHeight
+  // `video` may be a <video> or a canvas holding the captured frame.
+  const vw = video.videoWidth || video.width
+  const vh = video.videoHeight || video.height
   if (!vw || !vh) return null
 
   const t0 = performance.now()
@@ -522,6 +523,49 @@ export const extractFrame = (video, frameFeaturesOrOpts) => {
       try {
         keypoints?.delete()
         descriptors?.delete()
+      } catch {
+        /* already deleted */
+      }
+    },
+  }
+}
+
+/**
+ * Plain grayscale of the whole frame at a fixed processing width, for KLT
+ * optical flow (no CLAHE: flow assumes brightness constancy between frames).
+ * Returns { gray, sx, sy, dispose } where sx/sy = source px per gray px.
+ */
+export const grabGray = (source, width = TRACK_CONFIG.processWidth) => {
+  const vw = source.videoWidth || source.width
+  const vh = source.videoHeight || source.height
+  if (!vw || !vh) return null
+  const rt = ensureRuntime()
+  if (!rt.flowCanvas) {
+    rt.flowCanvas = document.createElement('canvas')
+    rt.flowCtx = rt.flowCanvas.getContext('2d', { willReadFrequently: true })
+  }
+  const scale = Math.min(1, width / vw)
+  const w = Math.max(1, Math.round(vw * scale))
+  const h = Math.max(1, Math.round(vh * scale))
+  if (rt.flowCanvas.width !== w || rt.flowCanvas.height !== h) {
+    rt.flowCanvas.width = w
+    rt.flowCanvas.height = h
+  }
+  rt.flowCtx.drawImage(source, 0, 0, w, h)
+  const rgba = cv.imread(rt.flowCanvas)
+  const gray = new cv.Mat()
+  try {
+    cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY)
+  } finally {
+    rgba.delete()
+  }
+  return {
+    gray,
+    sx: vw / w,
+    sy: vh / h,
+    dispose() {
+      try {
+        gray.delete()
       } catch {
         /* already deleted */
       }
