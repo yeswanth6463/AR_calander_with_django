@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { createGltfLoader } from '../ar/gltfLoader'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { createAnimationController } from '../ar/animation'
@@ -11,11 +11,13 @@ import {
   eulerDegreesFromObject,
   fitModelToMarker,
   createContactShadow,
+  CONTACT_SHADOW_ENABLED,
 } from '../ar/sceneTransform'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { createRectGizmo } from './RectGizmo'
 import UnityGizmoToolbar from './UnityGizmoToolbar'
 import { drawFeaturePreview } from '../ar/targetFeaturePreview'
+import ViewAxisGizmo from './ViewAxisGizmo'
 
 // API returns absolute URLs on :8000 — strip origin so requests go through
 // the Vite proxy (same-origin, no CORS).
@@ -466,7 +468,13 @@ export default function PreviewViewport({
     rectGizmoRef.current = rectGizmo
 
     const grid = new THREE.GridHelper(8, 32, 0x46484d, 0x383a3f)
-    const gridLight = new THREE.GridHelper(8, 32, 0xaab4c8, 0xd3d9e5)
+    // Light theme: lines must be DARKER than the #d8dadd background to show.
+    // Minor lines every 25 cm, major lines every 1 m (Blender / Unity style).
+    const gridLight = new THREE.Group()
+    const gridLightMinor = new THREE.GridHelper(8, 32, 0x7d848e, 0xbcc0c7)
+    const gridLightMajor = new THREE.GridHelper(8, 8, 0x7d848e, 0x9ba1aa)
+    gridLightMajor.position.y = 0.0005 // above the minor lines, no z-fighting
+    gridLight.add(gridLightMinor, gridLightMajor)
     const applyGridTheme = () => {
       grid.visible = !isLight()
       gridLight.visible = isLight()
@@ -897,7 +905,7 @@ export default function PreviewViewport({
             finishOne(false)
           })
       } else {
-        new GLTFLoader().load(
+        createGltfLoader().load(
           rel(asset.model_file),
           (gltf) => {
             if (stale()) return
@@ -905,11 +913,12 @@ export default function PreviewViewport({
             const size = fitModelToMarker(model)
             modelGroup.add(model)
 
-            // Add soft contact shadow under model onto the target marker plane
-            const shadow = createContactShadow(size.x, size.z)
-            const pz = Number(entry.transform?.position?.[2] || entry.transform?.position_z || 0)
-            shadow.position.set(0, -pz + 0.0015, 0)
-            modelGroup.add(shadow)
+            if (CONTACT_SHADOW_ENABLED) {
+              const shadow = createContactShadow(size.x, size.z)
+              const pz = Number(entry.transform?.position?.[2] || entry.transform?.position_z || 0)
+              shadow.position.set(0, -pz + 0.0015, 0)
+              modelGroup.add(shadow)
+            }
 
             // Enhance materials and textures
             model.traverse((child) => {
@@ -1022,6 +1031,7 @@ export default function PreviewViewport({
           imperatively-appended WebGL canvas when the badge toggles below. */}
       <div className="viewport-canvas" ref={mountRef} />
       {modelState && <div className="viewport-badge">{modelState}</div>}
+      <ViewAxisGizmo controlsRef={controlsRef} />
       <button
         type="button"
         className={`viewport-features-toggle ${showTargetFeatures ? 'active' : ''}`}

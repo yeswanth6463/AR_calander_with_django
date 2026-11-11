@@ -36,66 +36,6 @@ def extract_target_features(image_path):
     }
 
 
-def generate_feature_preview_image(image_path, nfeatures=1500):
-    """Generate a high-contrast grayscale image with rich ORB keypoint circles in red."""
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        raise ValueError("Unable to read target image.")
-
-    orb = cv2.ORB_create(nfeatures=nfeatures)
-    keypoints = orb.detect(image, None)
-
-    # Red circles in BGR: (0, 0, 255) with keypoint size & orientation
-    vis = cv2.drawKeypoints(
-        image,
-        keypoints,
-        None,
-        color=(0, 0, 255),
-        flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
-    )
-    success, buffer = cv2.imencode(".png", vis)
-    if not success:
-        raise ValueError("Failed to encode preview image.")
-    return buffer.tobytes(), len(keypoints)
-
-
-def get_target_features_details(image_path, cached_features=None, nfeatures=1500):
-    """Return keypoint details and AR tracking rating for a target."""
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        raise ValueError("Unable to read target image.")
-
-    h, w = image.shape[:2]
-    orb = cv2.ORB_create(nfeatures=nfeatures)
-    keypoints = orb.detect(image, None)
-
-    count = len(keypoints)
-    rating = 5 if count >= 500 else (4 if count >= 300 else (3 if count >= 150 else (2 if count >= 50 else 1)))
-    rating_text = (
-        "Optimal for Tracking" if rating == 5
-        else "Good Tracking Stability" if rating == 4
-        else "Moderate Tracking" if rating == 3
-        else "Low Feature Count"
-    )
-
-    return {
-        "width": w,
-        "height": h,
-        "feature_count": count,
-        "rating": rating,
-        "rating_text": rating_text,
-        "rich_keypoints": [
-            {
-                "x": round(float(k.pt[0]), 2),
-                "y": round(float(k.pt[1]), 2),
-                "size": round(float(k.size), 2),
-                "response": round(float(k.response), 4),
-            }
-            for k in keypoints
-        ],
-    }
-
-
 def track_target_image(target_path, frame_bytes, cached_features=None):
     """Match a saved target image against one camera frame."""
     target = cv2.imread(target_path, cv2.IMREAD_GRAYSCALE)

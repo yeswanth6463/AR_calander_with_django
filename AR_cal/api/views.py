@@ -1,7 +1,3 @@
-from django.shortcuts import render
-
-# Create your views here.
-
 from django.db import transaction
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes
@@ -18,11 +14,12 @@ from .serializer import (
     ExperienceItemSerializer,
 )
 from django.http import HttpResponse
-from .service.image_tracker import (
-    extract_target_features,
-    track_target_image,
+from .service.image_tracker import track_target_image
+from .service.target_bundle import compile_project_targets, compile_status
+from .service.target_compiler import (
+    TargetCompileError,
+    compile_target,
     generate_feature_preview_image,
-    get_target_features_details,
 )
 
 
@@ -114,37 +111,53 @@ class ExperienceItemViewSet(viewsets.ModelViewSet):
         serializer.save(order=order)
 
 
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def compile_targets(request, project_id):
+    """GET: compile status. POST: compile all target images into one bundle."""
+    project = get_object_or_404(Project, id=project_id, user=request.user)
+    if request.method == "GET":
+        return Response(compile_status(project))
+    result = compile_project_targets(project)
+    targets = [
+        {
+            "id": str(t.id),
+            "name": t.name,
+            **{
+                k: v
+                for k, v in (t.tracking_data or {}).items()
+                if k != "rich_keypoints"
+            },
+        }
+        for t in project.target_images.filter(is_active=True).order_by("created_at", "id")
+    ]
+    return Response({**result, "targets": targets})
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def register_target(request, target_id):
+    """Legacy per-target "Register": compiles the whole project bundle."""
     target = get_object_or_404(
         TargetImage,
         id=target_id,
         project__user=request.user,
         is_active=True,
     )
-
-    if not target.image:
+    compile_project_targets(target.project)
+    target.refresh_from_db(fields=["tracking_data"])
+    data = target.tracking_data or {}
+    if data.get("status") != "ready":
         return Response(
-            {"error": "Target image is missing."},
+            {"error": data.get("error") or "Target could not be compiled."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-
-    try:
-        features = extract_target_features(target.image.path)
-    except (ValueError, OSError) as exc:
-        return Response(
-            {"error": str(exc)},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    target.tracking_data = features
-    target.save(update_fields=["tracking_data", "updated_at"])
-
     return Response({
-        "message": "Target features registered successfully.",
+        "message": "Target compiled successfully.",
         "target_id": str(target.id),
-        "feature_count": len(features["keypoints"]),
+        "feature_count": data.get("feature_count", 0),
+        "index": data.get("index"),
+        "rating": data.get("rating"),
     })
 
 
@@ -164,17 +177,26 @@ def target_features(request, target_id):
         try:
             png_bytes, _count = generate_feature_preview_image(target.image.path)
             return HttpResponse(png_bytes, content_type="image/png")
-        except Exception as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except (TargetCompileError, OSError):
+            return Response({"error": "Unable to read target image."}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Same pipeline as the compiler, so the preview shows what is tracked.
     try:
-        details = get_target_features_details(target.image.path, target.tracking_data)
-        details["target_id"] = str(target.id)
-        details["name"] = target.name
-        details["preview_url"] = f"/api/targets/{target.id}/features/?format=image"
-        return Response(details)
-    except Exception as exc:
-        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        quality = compile_target(target.image.path)["quality"]
+    except (TargetCompileError, OSError):
+        return Response({"error": "Unable to read target image."}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({
+        "target_id": str(target.id),
+        "name": target.name,
+        "width": quality["source_width"],
+        "height": quality["source_height"],
+        "feature_count": quality["feature_count"],
+        "spread": quality["spread"],
+        "rating": quality["rating"],
+        "rating_text": quality["rating_text"],
+        "rich_keypoints": quality["rich_keypoints"],
+        "preview_url": f"/api/targets/{target.id}/features/?format=image",
+    })
 
 
 @api_view(["POST"])
@@ -208,17 +230,9 @@ def track_image(request, target_id):
         )
 
     try:
-        if not target.tracking_data:
-            target.tracking_data = extract_target_features(
-                target.image.path
-            )
-            target.save(update_fields=["tracking_data", "updated_at"])
-
-        result = track_target_image(
-            target.image.path,
-            frame.read(),
-            cached_features=target.tracking_data,
-        )
+        # tracking_data now holds compiler quality metadata, not raw
+        # descriptors, so features are extracted fresh here.
+        result = track_target_image(target.image.path, frame.read())
     except (ValueError, OSError) as exc:
         return Response(
             {"error": str(exc)},

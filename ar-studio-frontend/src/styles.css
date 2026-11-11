@@ -2702,3 +2702,168 @@ html[data-theme='light'] .viewport-features-toggle.active {
   user-select: none;
 }
 .preview-marker-toggles input { margin: 0; accent-color: #22d3ee; }
+
+/* ---------- Image targets panel (compiler) ---------- */
+.targets-panel { position: relative; }
+.targets-panel .count-badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+.compile-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 6px;
+  padding: 5px 6px 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-size: 11px;
+  overflow: hidden;
+}
+.compile-bar .compile-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.compile-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex-shrink: 0;
+}
+.compile-bar.ok .compile-dot { background: var(--ok); }
+.compile-bar.warn .compile-dot,
+.compile-bar.stale .compile-dot { background: #e0a030; }
+.compile-bar.stale .compile-text { color: var(--text); }
+.compile-bar.busy .compile-dot { background: var(--accent); animation: compile-pulse 1s ease-in-out infinite; }
+.compile-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 35%;
+  background: var(--accent);
+  animation: compile-slide 1.1s ease-in-out infinite;
+}
+@keyframes compile-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+@keyframes compile-pulse {
+  50% { opacity: 0.35; }
+}
+.target-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  text-align: center;
+  font-size: 12px;
+  cursor: pointer;
+}
+.target-dropzone:hover { background: var(--hover); }
+.targets-panel.is-dragging {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+.target-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  pointer-events: none;
+}
+.target-tree-row .target-index {
+  width: 22px;
+  flex-shrink: 0;
+  color: var(--faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.target-tree-row.ready .target-index { color: var(--muted); }
+.target-tree-row .target-thumb { width: 30px; height: 30px; }
+.target-tree-row.failed .target-thumb { opacity: 0.5; }
+.target-meta { display: flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; }
+.target-stars { letter-spacing: -1px; color: #e0a030; }
+.target-stars .off { color: var(--border); }
+.target-stars.r1, .target-stars.r2 { color: var(--accent); }
+.target-failed { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- View axis gizmo (Blender / Unity style) ---------- */
+.view-axis-gizmo {
+  --vag-neg-fill: rgba(17, 18, 20, 0.85);
+  --vag-pad: rgba(255, 255, 255, 0.08);
+  --vag-label: #111214;
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  z-index: 10;
+  width: 96px;
+  height: 96px;
+  user-select: none;
+  touch-action: none;
+}
+.view-axis-gizmo svg { display: block; overflow: visible; }
+.view-axis-gizmo .vag-pad { fill: transparent; transition: fill 0.15s; }
+.view-axis-gizmo.hover .vag-pad { fill: var(--vag-pad); }
+.view-axis-gizmo .vag-handle { cursor: pointer; }
+.view-axis-gizmo .vag-handle.blocked { cursor: not-allowed; }
+.view-axis-gizmo .vag-handle circle { transition: r 0.12s; }
+.view-axis-gizmo .vag-handle .vag-active { stroke: #fff; stroke-width: 2; }
+.view-axis-gizmo .vag-label {
+  fill: var(--vag-label);
+  font: 700 11px/1 system-ui, sans-serif;
+  pointer-events: none;
+}
+.view-axis-gizmo .vag-label.small { font-size: 9px; }
+html[data-theme='light'] .view-axis-gizmo {
+  --vag-neg-fill: rgba(255, 255, 255, 0.9);
+  --vag-pad: rgba(15, 23, 42, 0.08);
+}
+
+/* ---------- Model optimiser (assets panel) ---------- */
+.optimize-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.optimize-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-size: 11px;
+  color: var(--text);
+}
+.optimize-progress .compile-dot { background: var(--accent); animation: compile-pulse 1s ease-in-out infinite; }
+.asset-optimized { color: var(--ok); }
+.asset-heavy { color: #e0a030; }

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { createGltfLoader } from '../ar/gltfLoader'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import {
   ImageTracker,
+  loadTargetBundle,
   extractFrame,
   grabGray,
   paddedRoiFromCorners,
@@ -32,12 +33,21 @@ import {
   verticalFovForFrame,
   getQuadHomography,
 } from '../ar/pose'
-import { attachContentToTargetAnchor, applyARItemTransform, fitModelToMarker, createContactShadow } from '../ar/sceneTransform'
+import {
+  attachContentToTargetAnchor,
+  applyARItemTransform,
+  fitModelToMarker,
+  createContactShadow,
+  CONTACT_SHADOW_ENABLED,
+} from '../ar/sceneTransform'
 import { createAnimationController } from '../ar/animation'
+import { applyTextureBudget } from '../ar/textureBudget'
 import { createMediaPanel } from '../ar/mediaPanel'
 import { isFlatMedia } from '../ar/anchors'
 import { createGameEngine } from '../ar/gameEngine'
 import { relUrl } from '../ar/contentLoader'
+import { loadOpenCvOnPage } from '../ar/opencvRuntime'
+import { startTrackingWorkers, trackingWorkersSupported } from '../ar/trackingWorkers'
 import TrackingViewer from './TrackingViewer'
 import { createTapInteraction } from '../ar/interaction'
 import { playSound, runTapActions, tapActionsOf, usesScore } from '../ar/behaviors'
@@ -95,17 +105,70 @@ const waitForCv = () =>
   })
 
 const LOSS_GRACE_MS = 1200
+/** Max WebGL drawing-buffer pixels for the AR overlay (~1280×860). */
+const MAX_RENDER_PIXELS = 1_100_000
+
+/**
+ * Upload a freshly loaded model's textures and compile its shaders now,
+ * while the loading screen is up, instead of on the first frame it becomes
+ * visible (which froze the viewer for up to seconds on big models).
+ */
+async function warmUpModel(renderer, model, camera, scene) {
+  try {
+    await renderer.compileAsync(model, camera, scene)
+  } catch {
+    /* compileAsync unsupported: shaders compile on first draw */
+  }
+  const seen = new Set()
+  model.traverse((child) => {
+    const mats = Array.isArray(child.material) ? child.material : child.material ? [child.material] : []
+    for (const mat of mats) {
+      for (const value of Object.values(mat)) {
+        if (value?.isTexture && !seen.has(value)) {
+          seen.add(value)
+          renderer.initTexture(value)
+        }
+      }
+    }
+  })
+}
+/** Targets matched per camera frame while searching (nothing locked). */
+const SEARCH_TARGETS_PER_TICK = 2
+
+/** Debug switch: localStorage.arTrackerMainThread = '1' → old main-thread tracking. */
+const forceMainThreadTracking = () => {
+  try {
+    return localStorage.getItem('arTrackerMainThread') === '1'
+  } catch {
+    return false
+  }
+}
+
+/** RGBA pixels of an image, long edge capped (for compiling a target in a worker). */
+const imageDataOf = (img, maxEdge = 2048) => {
+  const k = Math.min(1, maxEdge / Math.max(img.naturalWidth, img.naturalHeight))
+  const c = document.createElement('canvas')
+  c.width = Math.max(1, Math.round(img.naturalWidth * k))
+  c.height = Math.max(1, Math.round(img.naturalHeight * k))
+  const ctx = c.getContext('2d', { willReadFrequently: true })
+  ctx.drawImage(img, 0, 0, c.width, c.height)
+  return ctx.getImageData(0, 0, c.width, c.height)
+}
 // While optical flow holds the target, re-run ORB this often to catch drift.
 const REDETECT_EVERY_TICKS = 12
 // Reseed flow when ORB disagrees by more than this fraction of the quad size.
 const DRIFT_FRAC = 0.02
 const DRIFT_MIN_PX = 5
 
+let chimeCtx = null
 const playChime = () => {
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext
     if (!AudioCtx) return
-    const ctx = new AudioCtx()
+    // One shared context: creating one per chime is slow and browsers cap them.
+    if (!chimeCtx || chimeCtx.state === 'closed') chimeCtx = new AudioCtx()
+    const ctx = chimeCtx
+    if (ctx.state === 'suspended') ctx.resume?.()
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
     osc.type = 'sine'
@@ -286,7 +349,9 @@ function ImageViewer({ preloaded }) {
     let disposed = false
     const groups = new Map()
     let cameraStream = null
+    let trackingClient = null // Web Worker tracking (null = main-thread fallback)
     let stop = () => {
+      trackingClient?.dispose()
       for (const g of groups.values()) {
         g.tracker?.dispose?.()
         g.flow?.dispose?.()
@@ -304,7 +369,13 @@ function ImageViewer({ preloaded }) {
         if (disposed) return
 
         setStatus('loading tracker…')
-        await waitForCv()
+        // Tracking (OpenCV) runs in Web Workers so it never blocks rendering;
+        // OpenCV is only loaded on the page for the main-thread fallback.
+        const useWorkers = trackingWorkersSupported() && !forceMainThreadTracking()
+        if (!useWorkers) {
+          await loadOpenCvOnPage()
+          await waitForCv()
+        }
         if (disposed) return
 
         let sourceItems = []
@@ -347,11 +418,67 @@ function ImageViewer({ preloaded }) {
         setStatus(
           `loading ${groups.size} target image${groups.size > 1 ? 's' : ''}…`
         )
+        // Server-compiled bundle (one file for all targets); any target
+        // missing from it is compiled here from its image as a fallback.
+        let bundle = null
+        try {
+          bundle = await loadTargetBundle(exp.compiled_targets?.url ? rel(exp.compiled_targets.url) : null)
+        } catch (err) {
+          console.warn('[AR] compiled targets unavailable, compiling locally', err)
+        }
+        if (disposed) return
+
+        if (useWorkers) {
+          for (const g of groups.values()) g.key = String(g.target.id || g.target.image_url)
+          try {
+            trackingClient = await startTrackingWorkers({
+              targets: [...groups.values()].map((g) => ({
+                key: g.key,
+                entry: bundle?.get(String(g.target.id || '')) || null,
+                imageUrl: rel(g.target.image_url),
+              })),
+              loadImageData: async (url) => imageDataOf(await loadImage(url)),
+              drift: { minPx: DRIFT_MIN_PX, frac: DRIFT_FRAC },
+            })
+          } catch (err) {
+            console.warn('[AR] tracking workers unavailable, tracking on the main thread', err)
+            trackingClient = null
+            await loadOpenCvOnPage()
+            await waitForCv()
+          }
+          if (disposed) {
+            trackingClient?.dispose()
+            return
+          }
+        }
+
         for (const g of groups.values()) {
-          const targetImg = await loadImage(rel(g.target.image_url))
-          if (disposed) return
+          if (trackingClient) {
+            // Matching + flow live in the workers; the page only needs the
+            // compiled target size (pose solve, content aspect).
+            const size = trackingClient.sizes.get(g.key)
+            g.tracker = { targetW: size.width, targetH: size.height, dispose() {} }
+            g.flow = { reset() {}, dispose() {} }
+            g.smooth = null
+            g.lastFound = 0
+            continue
+          }
           g.tracker = new ImageTracker()
-          g.tracker.compile(targetImg)
+          const entry = bundle?.get(String(g.target.id || ''))
+          let loaded = false
+          if (entry) {
+            try {
+              g.tracker.loadCompiled(entry)
+              loaded = true
+            } catch (err) {
+              console.warn('[AR] bad compiled target, compiling locally', err)
+            }
+          }
+          if (!loaded) {
+            const targetImg = await loadImage(rel(g.target.image_url))
+            if (disposed) return
+            g.tracker.compile(targetImg)
+          }
           g.flow = new FlowTracker()
           g.smooth = null
           g.lastFound = 0
@@ -381,10 +508,11 @@ function ImageViewer({ preloaded }) {
         // the model is rendered with that same frame's pose, so the model can't
         // slide against a newer frame shown by the <video> element.
         const camCanvas = camRef.current
-        const camCtx = camCanvas.getContext('2d', { alpha: false, willReadFrequently: true })
-        const useFlow = flowSupported()
+        // GPU-backed: this canvas is only drawn and displayed. Pixel reads happen
+        // on the small processing canvases in tracker.js (willReadFrequently there).
+        const camCtx = camCanvas.getContext('2d', { alpha: false })
+        const useFlow = trackingClient ? trackingClient.flow : flowSupported()
         if (renderDebug()) console.info('[AR viewer] optical flow', useFlow ? 'enabled' : 'unavailable → detection only')
-        const dpr = Math.min(window.devicePixelRatio || 1, 2)
         const renderer = new THREE.WebGLRenderer({
           canvas: glCanvas,
           alpha: true,
@@ -395,8 +523,27 @@ function ImageViewer({ preloaded }) {
         renderer.outputColorSpace = THREE.SRGBColorSpace
         renderer.toneMapping = THREE.ACESFilmicToneMapping
         renderer.toneMappingExposure = 1.05
-        renderer.setPixelRatio(dpr)
-        renderer.setSize(video.videoWidth, video.videoHeight, false)
+        // Drawing buffer sized to what is actually shown on screen (cover
+        // layout × device pixels), capped at MAX_RENDER_PIXELS. It used to be
+        // camera resolution × DPR (e.g. 3840×2160 for a 1080p camera).
+        let lastBufW = 0
+        let lastBufH = 0
+        const sizeRenderer = (vw, vh) => {
+          const root = glCanvas.parentElement
+          const cover = root?.clientWidth ? Math.max(root.clientWidth / vw, root.clientHeight / vh) : 1
+          const deviceScale = Math.min(window.devicePixelRatio || 1, 2)
+          const w = vw * cover * deviceScale
+          const h = vh * cover * deviceScale
+          const k = Math.min(1, Math.sqrt(MAX_RENDER_PIXELS / (w * h)))
+          const bw = Math.max(1, Math.round(w * k))
+          const bh = Math.max(1, Math.round(h * k))
+          if (bw === lastBufW && bh === lastBufH) return
+          lastBufW = bw
+          lastBufH = bh
+          renderer.setPixelRatio(1)
+          renderer.setSize(bw, bh, false)
+        }
+        sizeRenderer(video.videoWidth, video.videoHeight)
 
         const scene = new THREE.Scene()
         const pmremGenerator = new THREE.PMREMGenerator(renderer)
@@ -408,8 +555,9 @@ function ImageViewer({ preloaded }) {
         const camera = new THREE.PerspectiveCamera(50, video.videoWidth / video.videoHeight, 0.01, 1000)
         scene.add(camera)
 
-        // Soft hemisphere ambient light
-        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x334455, 0.6)
+        // Soft hemisphere ambient light (same rig as the studio preview, so a
+        // model does not change brightness between the editor and the phone).
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x334455, 0.65)
         scene.add(hemiLight)
 
         // Key light (camera relative: illuminates front-right face crisp and bright)
@@ -423,7 +571,7 @@ function ImageViewer({ preloaded }) {
         camera.add(fill)
 
         // Rim / Back light (camera relative: adds depth separation against real room background)
-        const rim = new THREE.DirectionalLight(0xffeedd, 0.55)
+        const rim = new THREE.DirectionalLight(0xffeedd, 0.45)
         rim.position.set(0, -0.6, -1.0)
         camera.add(rim)
 
@@ -456,7 +604,6 @@ function ImageViewer({ preloaded }) {
           if (lastSyncW !== vw || lastSyncH !== vh) {
             lastSyncW = vw
             lastSyncH = vh
-            renderer.setSize(vw, vh, false)
             camCanvas.width = vw
             camCanvas.height = vh
             // Old smoothed corners are in pre-rotation frame coords — drop them.
@@ -470,6 +617,7 @@ function ImageViewer({ preloaded }) {
           camera.fov = verticalFovForFrame(vw, vh)
           camera.aspect = vw / vh
           camera.updateProjectionMatrix()
+          sizeRenderer(vw, vh)
           applyCoverLayout(video, vw, vh)
           applyCoverLayout(camCanvas, vw, vh)
           applyCoverLayout(glCanvas, vw, vh)
@@ -705,14 +853,26 @@ function ImageViewer({ preloaded }) {
           }
         }
 
-        const gltfLoader = new GLTFLoader()
+        const gltfLoader = createGltfLoader()
         const gltfCache = new Map()
         const loadGltf = (url) => {
           if (!gltfCache.has(url)) {
             gltfCache.set(
               url,
               new Promise((resolve, reject) => {
-                gltfLoader.load(url, resolve, undefined, reject)
+                gltfLoader.load(
+                  url,
+                  (gltf) => {
+                    // The parser keeps every decoded source image alive (hundreds
+                    // of MB on studio models) and nothing needs it once the scene,
+                    // animations and textures exist. Drop it so those bitmaps can
+                    // be collected after the texture budget pass replaces them.
+                    gltf.parser = null
+                    resolve(gltf)
+                  },
+                  undefined,
+                  reject
+                )
               })
             )
           }
@@ -786,23 +946,38 @@ function ImageViewer({ preloaded }) {
               })
           } else {
             loadGltf(modelPath)
-              .then((gltf) => {
+              .then(async (gltf) => {
                 if (disposed) return
                 const model = cloneSkinned(gltf.scene)
                 const size = fitModelToMarker(model)
                 fit.add(model)
 
-                // Add soft contact shadow under model onto the target marker plane
-                const shadow = createContactShadow(size.x, size.z)
-                shadow.userData.noTap = true
-                const pz = Number(item.transform?.position?.[2] || 0)
-                shadow.position.set(0, -pz + 0.0015, 0)
-                fit.add(shadow)
+                if (CONTACT_SHADOW_ENABLED) {
+                  const shadow = createContactShadow(size.x, size.z)
+                  shadow.userData.noTap = true
+                  const pz = Number(item.transform?.position?.[2] || 0)
+                  shadow.position.set(0, -pz + 0.0015, 0)
+                  fit.add(shadow)
+                }
+
+                // Keep GPU texture memory inside what a phone can allocate.
+                // Must run before warmUpModel: the first upload is where an
+                // over-budget model silently loses its maps. A failure here
+                // must never stop the model from loading.
+                let texBudget = null
+                try {
+                  texBudget = await applyTextureBudget(model, { renderer })
+                } catch (err) {
+                  console.warn('[AR viewer] texture budget skipped', err)
+                }
+                if (disposed) return
 
                 // Enhance materials and textures with realistic IBL intensity and sRGB color space
                 model.traverse((child) => {
                   if (child.isMesh) {
-                    child.frustumCulled = false
+                    // Skinned meshes keep their bind-pose bounds, so culling
+                    // can hide them mid-animation; everything else is culled.
+                    child.frustumCulled = !child.isSkinnedMesh
                     const mats = Array.isArray(child.material) ? child.material : [child.material]
                     mats.forEach((mat) => {
                       if (!mat) return
@@ -814,6 +989,8 @@ function ImageViewer({ preloaded }) {
                   }
                 })
 
+                await warmUpModel(renderer, model, camera, scene)
+                if (disposed) return
                 group.modelReady = true
                 if (renderDebug()) {
                   const wp = new THREE.Vector3()
@@ -822,6 +999,7 @@ function ImageViewer({ preloaded }) {
                     id: item.id,
                     url: modelPath,
                     bbox: size.toArray(),
+                    textures: texBudget,
                     local: {
                       position: fit.position.toArray(),
                       rotation: fit.rotation.toArray().slice(0, 3),
@@ -1057,7 +1235,242 @@ function ImageViewer({ preloaded }) {
           renderer.render(scene, camera)
         }
 
+        const groupList = [...groups.values()]
+        let searchCursor = 0
+
+        /**
+         * Apply one frame's tracking results (from the workers or the
+         * main-thread fallback): pose update, loss grace, found/lost UI, hints.
+         * Returns whether any target is currently shown.
+         */
+        const finishTick = (resultFor, now, diagnostics) => {
+          let anyFound = false
+          for (const g of groupList) {
+            const r = resultFor(g)
+            if (r?.found && applyDetection(g, r, now, r.viaFlow)) {
+              anyFound = true
+            } else if (now - g.lastFound > LOSS_GRACE_MS) {
+              if (g.smooth || g.anchor.visible) {
+                g.smooth = null
+                g.cornerFilter = null
+                g.flow.reset()
+              }
+              g.anchor.visible = false
+            } else if (g.anchor.visible) {
+              anyFound = true
+            }
+          }
+
+          if (!anyFound && !acquireStartedAt) acquireStartedAt = now
+          if (anyFound) acquireStartedAt = 0
+
+          if (anyFound !== lastTrackingState) {
+            lastTrackingState = anyFound
+            engine?.emit(anyFound ? 'target_found' : 'target_lost')
+            if (!disposed) {
+              setTargetFound(anyFound)
+              if (anyFound) {
+                setFoundAlert(true)
+                playChime()
+                try {
+                  navigator.vibrate?.([60, 40, 60])
+                } catch {
+                  /* ignore */
+                }
+                if (alertTimerRef.current) clearTimeout(alertTimerRef.current)
+                alertTimerRef.current = setTimeout(() => {
+                  if (!disposed) setFoundAlert(false)
+                }, 2400)
+              }
+            }
+          }
+
+          if (!anyFound && now - lastHintAt > 350) {
+            lastHintAt = now
+            const d = diagnostics() || {}
+            let hint = 'Point camera directly at target image'
+            if (d.inliers > 0) {
+              hint = `Locking on: ${d.inliers}/${TRACK_CONFIG.minInliers} inliers — keep steady`
+            } else if (d.ratioMatches >= 3) {
+              hint = `Target detected (${d.ratioMatches} matches) — hold steady`
+            } else if (d.frameKps < 150) {
+              hint = 'Low lighting — brighten the target image'
+            }
+            if (!disposed) setHintText(hint)
+          }
+          return anyFound
+        }
+
+        // ---- Worker tracking -------------------------------------------------
+        // Per camera frame: grab a small RGBA copy for the flow worker and an
+        // ImageBitmap of the full frame for display. When the flow result for
+        // that frame comes back, the frame and its pose are shown together
+        // (frame-locked). Detection runs alongside in the detect worker.
+        const procCanvas = document.createElement('canvas')
+        const procCtx = procCanvas.getContext('2d', { willReadFrequently: true })
+        const cropCanvas = document.createElement('canvas')
+        const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true })
+        const trackDebug = renderDebug() // localStorage.arTrackerDebug = '1' → window.__arTrackStats
+        const frameBitmaps = new Map() // frameId → ImageBitmap | null (still decoding)
+        let frameSeq = 0
+        let presentQueue = null // newest flow result waiting to be shown
+        let workerDiag = null
+        const detectionOnly = new Map() // key → result (OpenCV builds without KLT)
+
+        const captureFrame = () => {
+          const vw = video.videoWidth
+          const vh = video.videoHeight
+          const scale = Math.min(1, FLOW_CONFIG.width / vw)
+          const w = Math.max(1, Math.round(vw * scale))
+          const h = Math.max(1, Math.round(vh * scale))
+          const frameId = ++frameSeq
+          frameBitmaps.set(frameId, null)
+          const meta = { frameId, width: w, height: h, sx: vw / w, sy: vh / h, videoW: vw, videoH: vh }
+
+          if (trackingClient.bitmaps) {
+            // GPU path: both snapshots are taken now (same video frame); the
+            // small one is scaled by the browser and read in the worker.
+            trackingClient.reserveFrame()
+            const full = createImageBitmap(video)
+            const small = createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: 'medium' })
+            full
+              .then((bmp) => {
+                if (frameBitmaps.has(frameId)) frameBitmaps.set(frameId, bmp)
+                else bmp.close()
+              })
+              .catch(() => frameBitmaps.delete(frameId))
+            small
+              .then((bitmap) => {
+                if (disposed) return bitmap.close()
+                trackingClient.sendFrame({ ...meta, bitmap })
+              })
+              .catch(() => {
+                frameBitmaps.delete(frameId)
+                trackingClient.releaseFrame()
+              })
+            return
+          }
+
+          if (procCanvas.width !== w || procCanvas.height !== h) {
+            procCanvas.width = w
+            procCanvas.height = h
+          }
+          procCtx.drawImage(video, 0, 0, w, h)
+          const image = procCtx.getImageData(0, 0, w, h)
+          createImageBitmap(video)
+            .then((bmp) => {
+              if (frameBitmaps.has(frameId)) frameBitmaps.set(frameId, bmp)
+              else bmp.close()
+            })
+            .catch(() => frameBitmaps.delete(frameId))
+          trackingClient.sendFrame({ ...meta, image })
+        }
+
+        /** Returns a promise when it reads `source` asynchronously (keep it open until then). */
+        const requestDetection = (frameId, source, now) => {
+          if (trackingClient.detectBusy) return null
+          const vw = video.videoWidth
+          const vh = video.videoHeight
+          const active = groupList.find((g) => g.smooth && now - g.lastFound <= LOSS_GRACE_MS)
+          let keys
+          let roi = null
+          let locked = false
+          if (active) {
+            // While the flow holds the target, only re-check it now and then
+            // (drift correction); detection-only builds check every frame.
+            if (useFlow && active.flowing && frameId - (active.lastDetectFrame || 0) < REDETECT_EVERY_TICKS) return null
+            active.lastDetectFrame = frameId
+            keys = [active.key]
+            locked = true
+            if (active.flowing || !useFlow) roi = paddedRoiFromCorners(active.smooth, vw, vh)
+          } else {
+            const n = groupList.length
+            const k = Math.min(SEARCH_TARGETS_PER_TICK, n)
+            keys = []
+            for (let i = 0; i < k; i++) keys.push(groupList[(searchCursor + i) % n].key)
+            searchCursor = (searchCursor + k) % Math.max(n, 1)
+          }
+          const srcX = roi ? roi.x : 0
+          const srcY = roi ? roi.y : 0
+          const srcW = roi ? roi.w : vw
+          const srcH = roi ? roi.h : vh
+          const scale = Math.min(1, TRACK_CONFIG.processWidth / srcW)
+          const w = Math.max(1, Math.round(srcW * scale))
+          const h = Math.max(1, Math.round(srcH * scale))
+          const req = { frameId, width: w, height: h, region: { srcX, srcY, srcW, srcH, videoW: vw, videoH: vh, roi }, keys, locked }
+          if (trackingClient.bitmaps && source !== video) {
+            trackingClient.reserveDetect()
+            return createImageBitmap(source, srcX, srcY, srcW, srcH, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' })
+              .then((bitmap) => {
+                if (disposed) return bitmap.close()
+                trackingClient.detect({ ...req, bitmap })
+              })
+              .catch(() => trackingClient.releaseDetect())
+          }
+          if (cropCanvas.width !== w || cropCanvas.height !== h) {
+            cropCanvas.width = w
+            cropCanvas.height = h
+          }
+          cropCtx.drawImage(source, srcX, srcY, srcW, srcH, 0, 0, w, h)
+          trackingClient.detect({ ...req, image: cropCtx.getImageData(0, 0, w, h) })
+          return null
+        }
+
+        if (trackingClient) {
+          trackingClient.onFrame((msg) => {
+            presentQueue = msg
+            if (trackDebug) window.__arTrackStats = { ...msg.stats, flowMs: msg.ms }
+          })
+          trackingClient.onDetect((msg) => {
+            workerDiag = msg.diag || workerDiag
+            if (!msg.found) return
+            if (useFlow) trackingClient.sendDetection(msg)
+            else detectionOnly.set(msg.key, { found: true, corners: msg.corners, H: msg.H, viaFlow: false })
+          })
+          trackingClient.onError((message) => console.warn('[AR worker]', message))
+        }
+
+        const workerTick = () => {
+          if (disposed || !video.videoWidth) return
+          if (camCanvas.width !== video.videoWidth || camCanvas.height !== video.videoHeight) syncVideoSize()
+          const now = performance.now()
+
+          // 1. Show the newest tracked frame together with its pose.
+          const msg = presentQueue
+          if (msg) {
+            presentQueue = null
+            const bmp = frameBitmaps.get(msg.frameId) || null
+            for (const [id, b] of frameBitmaps) {
+              if (id >= msg.frameId) break
+              b?.close?.()
+              frameBitmaps.delete(id)
+            }
+            frameBitmaps.delete(msg.frameId)
+            const source = bmp || video
+            camCtx.drawImage(source, 0, 0, camCanvas.width, camCanvas.height)
+            const results = new Map()
+            for (const r of msg.results || []) results.set(r.key, r)
+            for (const [key, r] of detectionOnly) results.set(key, r)
+            detectionOnly.clear()
+            for (const g of groupList) g.flowing = results.get(g.key)?.viaFlow === true
+            const reading = requestDetection(msg.frameId, source, now)
+            if (reading) reading.finally(() => bmp?.close())
+            else bmp?.close()
+            const anyFound = finishTick((g) => results.get(g.key) || null, now, () => workerDiag)
+            noteTrackerTiming(msg.ms || 0, anyFound ? 'tracking' : 'scanning')
+          }
+
+          // 2. Hand the next camera frame to the flow worker (one in flight).
+          if ((hasVfc ? newFrame : now - lastTrackAt >= 28) && !trackingClient.flowBusy) {
+            newFrame = false
+            lastTrackAt = now
+            captureFrame()
+          }
+        }
+
+
         const trackTick = () => {
+          if (trackingClient) return workerTick()
           if (disposed || trackBusy || !video.videoWidth) return
           const now = performance.now()
           if (hasVfc ? !newFrame : now - lastTrackAt < 28) return
@@ -1077,57 +1490,26 @@ function ImageViewer({ preloaded }) {
               return fullFrame
             }
 
-            for (const g of groups.values()) {
-              const r = trackGroup(g, camCanvas, grab, getFullFrame, now)
-              if (r.found && applyDetection(g, r, now, r.viaFlow)) {
-                anyFound = true
-              } else if (now - g.lastFound > LOSS_GRACE_MS) {
-                g.smooth = null
-                g.cornerFilter = null
-                g.flow.reset()
-                g.anchor.visible = false
-              } else if (g.anchor.visible) {
-                anyFound = true
-              }
+            // One target at a time (MindAR maxTrack = 1): follow only the
+            // locked target; while nothing is locked, scan a few targets per
+            // frame in rotation so cost stays flat as targets are added.
+            const active = groupList.find((g) => g.smooth && now - g.lastFound <= LOSS_GRACE_MS)
+            let toTrack
+            if (active) {
+              toTrack = [active]
+            } else {
+              const n = groupList.length
+              const k = Math.min(SEARCH_TARGETS_PER_TICK, n)
+              toTrack = []
+              for (let i = 0; i < k; i++) toTrack.push(groupList[(searchCursor + i) % n])
+              searchCursor = (searchCursor + k) % Math.max(n, 1)
             }
 
-            if (!anyFound && !acquireStartedAt) acquireStartedAt = now
-            if (anyFound) acquireStartedAt = 0
-
-            if (anyFound !== lastTrackingState) {
-              lastTrackingState = anyFound
-              engine?.emit(anyFound ? 'target_found' : 'target_lost')
-              if (!disposed) {
-                setTargetFound(anyFound)
-                if (anyFound) {
-                  setFoundAlert(true)
-                  playChime()
-                  try {
-                    navigator.vibrate?.([60, 40, 60])
-                  } catch {
-                    /* ignore */
-                  }
-                  if (alertTimerRef.current) clearTimeout(alertTimerRef.current)
-                  alertTimerRef.current = setTimeout(() => {
-                    if (!disposed) setFoundAlert(false)
-                  }, 2400)
-                }
-              }
-            }
-
-            if (!anyFound && now - lastHintAt > 350) {
-              lastHintAt = now
-              const d = getTrackerDiagnostics()
-              let hint = 'Point camera directly at target image'
-              if (d.inliers > 0) {
-                hint = `Locking on: ${d.inliers}/${TRACK_CONFIG.minInliers} inliers — keep steady`
-              } else if (d.ratioMatches >= 3) {
-                hint = `Target detected (${d.ratioMatches} matches) — hold steady`
-              } else if (d.frameKps < 150) {
-                hint = 'Low lighting — brighten the target image'
-              }
-              if (!disposed) setHintText(hint)
-            }
+            anyFound = finishTick(
+              (g) => (toTrack.includes(g) ? trackGroup(g, camCanvas, grab, getFullFrame, now) : null),
+              now,
+              getTrackerDiagnostics
+            )
             noteTrackerTiming(performance.now() - t0, anyFound ? 'tracking' : 'scanning')
           } finally {
             grab?.dispose()

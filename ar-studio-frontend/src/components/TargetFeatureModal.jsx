@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api'
-import { drawFeaturePreview, calculateTrackingQuality } from '../ar/targetFeaturePreview'
+import {
+  drawFeaturePreview,
+  calculateTrackingQuality,
+  trackingQualityForRating,
+  PREVIEW_POINT_LIMIT,
+} from '../ar/targetFeaturePreview'
+
+const POINT_OPTIONS = [50, PREVIEW_POINT_LIMIT, 300, 0] // 0 = all
 
 const rel = (url) => {
   try {
@@ -18,6 +25,7 @@ export default function TargetFeatureModal({ target, onClose }) {
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [circleScale, setCircleScale] = useState(1)
+  const [pointLimit, setPointLimit] = useState(PREVIEW_POINT_LIMIT)
   const [isPanning, setIsPanning] = useState(false)
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 })
 
@@ -96,9 +104,10 @@ export default function TargetFeatureModal({ target, onClose }) {
       grayscale: mode === 'features',
       showFeatures: mode === 'features',
       circleScale,
+      maxPoints: pointLimit,
       strokeColor: '#ff2222',
     })
-  }, [featureData, mode, circleScale, target])
+  }, [featureData, mode, circleScale, pointLimit, target])
 
   useEffect(() => {
     if (!loading && imgRef.current) {
@@ -163,11 +172,15 @@ export default function TargetFeatureModal({ target, onClose }) {
 
   const featureCount =
     featureData?.feature_count ??
+    target?.tracking_data?.feature_count ??
     target?.tracking_data?.keypoints?.length ??
     featureData?.rich_keypoints?.length ??
     0
 
-  const quality = calculateTrackingQuality(featureCount)
+  const serverRating = featureData?.rating ?? target?.tracking_data?.rating
+  const quality = Number.isFinite(serverRating)
+    ? trackingQualityForRating(serverRating)
+    : calculateTrackingQuality(featureCount)
 
   return (
     <div className="target-modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
@@ -234,6 +247,18 @@ export default function TargetFeatureModal({ target, onClose }) {
           </div>
 
           <div className="target-modal-toolbar-right">
+            {mode === 'features' && (
+              <label className="target-scale-slider-wrap" title="How many circles to draw (display only — tracking uses all points)">
+                <span className="tiny muted">Show:</span>
+                <select value={pointLimit} onChange={(e) => setPointLimit(Number(e.target.value))}>
+                  {POINT_OPTIONS.map((n) => (
+                    <option key={n} value={n}>
+                      {n ? `${n} points` : 'All points'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {mode === 'features' && (
               <div className="target-scale-slider-wrap" title="Adjust feature circle size">
                 <span className="tiny muted">Circle Size:</span>

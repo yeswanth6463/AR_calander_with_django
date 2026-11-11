@@ -55,6 +55,48 @@ export function calculateTrackingQuality(featureCount = 0) {
   }
 }
 
+/** Same labels/colours, driven by the server compiler's 0–5 rating. */
+export function trackingQualityForRating(rating = 0) {
+  const counts = { 5: 500, 4: 300, 3: 150, 2: 50 }
+  return calculateTrackingQuality(counts[rating] ?? 0)
+}
+
+/** Circles drawn by default — display only; tracking uses every compiled point. */
+export const PREVIEW_POINT_LIMIT = 150
+
+/**
+ * Evenly spread subset of `keypoints` (already strongest-first): each cell of
+ * an 8×8 grid gives its best point, then its second best, … up to `max`.
+ */
+export function thinKeypoints(keypoints, max, width, height, grid = 8) {
+  if (!Array.isArray(keypoints) || !max || keypoints.length <= max) return keypoints || []
+  const cells = new Map()
+  for (const kp of keypoints) {
+    const x = typeof kp.x === 'number' ? kp.x : kp[0]
+    const y = typeof kp.y === 'number' ? kp.y : kp[1]
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    const cx = Math.min(grid - 1, Math.max(0, Math.floor((x / width) * grid)))
+    const cy = Math.min(grid - 1, Math.max(0, Math.floor((y / height) * grid)))
+    const key = cy * grid + cx
+    if (!cells.has(key)) cells.set(key, [])
+    cells.get(key).push(kp)
+  }
+  const buckets = [...cells.values()]
+  const out = []
+  for (let rank = 0; out.length < max; rank++) {
+    let added = false
+    for (const b of buckets) {
+      if (rank < b.length) {
+        out.push(b[rank])
+        added = true
+        if (out.length >= max) break
+      }
+    }
+    if (!added) break
+  }
+  return out
+}
+
 /**
  * Draws image onto target canvas in grayscale with red feature point circles.
  */
@@ -67,6 +109,7 @@ export function drawFeaturePreview(
     showFeatures = true,
     circleScale = 1.0,
     strokeColor = '#ff2222',
+    maxPoints = PREVIEW_POINT_LIMIT, // 0 = draw all
   } = {}
 ) {
   if (!canvas || !img) return
@@ -107,6 +150,7 @@ export function drawFeaturePreview(
 
   // 3. Draw Red Feature Circles
   if (showFeatures && Array.isArray(keypoints) && keypoints.length > 0) {
+    keypoints = thinKeypoints(keypoints, maxPoints, w, h)
     ctx.save()
     ctx.strokeStyle = strokeColor
     ctx.lineWidth = Math.max(1.5, Math.round(w / 700))

@@ -11,14 +11,8 @@ import BehaviorsPanel from '../components/BehaviorsPanel'
 import GameSettingsPanel from '../components/GameSettingsPanel'
 import PreviewViewport from '../components/PreviewViewport'
 import TargetFeatureModal from '../components/TargetFeatureModal'
+import TargetsPanel from '../components/TargetsPanel'
 
-const rel = (url) => {
-  try {
-    return new URL(url, window.location.origin).pathname
-  } catch {
-    return url
-  }
-}
 
 export default function ProjectDetail() {
   const { id } = useParams()
@@ -289,6 +283,7 @@ export default function ProjectDetail() {
             <TargetsPanel
               projectId={id}
               targets={targets}
+              compileStatus={project.targets_compile}
               reload={load}
               onError={setError}
               onNotice={setNotice}
@@ -397,135 +392,6 @@ export default function ProjectDetail() {
           target={previewTarget}
           onClose={() => setPreviewTarget(null)}
         />
-      )}
-    </div>
-  )
-}
-
-function TargetsPanel({ projectId, targets, reload, onError, onNotice, selectedId, onPreviewTarget }) {
-  const [busy, setBusy] = useState(false)
-  const [expanded, setExpanded] = useState(true)
-
-  const upload = async (e) => {
-    const files = Array.from(e.target.files || [])
-    if (!files.length) return
-    setBusy(true)
-    onError('')
-    try {
-      for (const file of files) {
-        const fd = new FormData()
-        fd.append('project', projectId)
-        fd.append('name', file.name.replace(/\.[^.]+$/, ''))
-        fd.append('image', file)
-        fd.append('target_width', 0.2)
-        await api('/targets/', { method: 'POST', formData: fd })
-      }
-      onNotice(`Uploaded ${files.length} target${files.length > 1 ? 's' : ''}.`)
-      e.target.value = ''
-      await reload()
-    } catch (err) {
-      onError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const register = async (targetId) => {
-    onError('')
-    try {
-      const d = await api(`/targets/${targetId}/register/`, { method: 'POST' })
-      onNotice(`Registered ${d.feature_count} features.`)
-      await reload()
-    } catch (err) {
-      onError(err.message)
-    }
-  }
-
-  const remove = async (targetId, e) => {
-    e?.stopPropagation?.()
-    e?.preventDefault?.()
-    if (!confirm('Delete this target image? Scene items that use it will be removed.')) return
-    onError('')
-    try {
-      await api(`/targets/${targetId}/`, { method: 'DELETE' })
-      onNotice('Target deleted.')
-      await reload()
-    } catch (err) {
-      onError(err.message)
-    }
-  }
-
-  return (
-    <div className="panel-section">
-      <div className="panel-head">
-        <button
-          className="panel-toggle"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          <h2>Targets</h2>
-          <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
-        </button>
-        <label className={`btn small ${busy ? 'ghost' : ''}`}>
-          {busy ? '…' : '+ Upload'}
-          <input type="file" accept="image/*" multiple hidden onChange={upload} disabled={busy} />
-        </label>
-      </div>
-      {expanded && (
-        <>
-          {targets.length === 0 && (
-            <p className="muted small-text">Drop detailed, high-contrast images. Multiple files supported.</p>
-          )}
-          <div className="tree-list">
-            {targets.map((t) => (
-              <div key={t.id} className={`tree-row target-tree-row ${selectedId === t.id ? 'active' : ''}`}>
-                {t.image && (
-                  <img
-                    className="tree-thumb clickable-target-thumb"
-                    src={rel(t.image)}
-                    alt={t.name}
-                    title="Click to preview OpenCV feature tracking points"
-                    onClick={() => onPreviewTarget?.(t)}
-                  />
-                )}
-                <span
-                  className="tree-label clickable-target-label"
-                  title="Click to preview OpenCV feature tracking points"
-                  onClick={() => onPreviewTarget?.(t)}
-                >
-                  <span className="name">{t.name}</span>
-                  <span className="tiny muted">
-                    {t.target_width} m · {t.tracking_data ? 'tracked' : 'unregistered'}
-                  </span>
-                </span>
-                <div className="item-actions">
-                  <button
-                    type="button"
-                    className="btn ghost small target-feature-pill-btn"
-                    title="Preview Target Features (Grayscale & Red Circles)"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onPreviewTarget?.(t)
-                    }}
-                  >
-                    🎯 Features
-                  </button>
-                  {!t.tracking_data && (
-                    <button className="btn small" onClick={() => register(t.id)}>Register</button>
-                  )}
-                  <button
-                    type="button"
-                    className="btn ghost small"
-                    title="Delete target"
-                    onClick={(e) => remove(t.id, e)}
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
       )}
     </div>
   )
@@ -942,11 +808,13 @@ function InspectorPanel({
                 return { id: item.id, label: `${item.name || assetName} · ${targetName}` }
               })}
             onSave={(behaviors) => onTransformChange(selectedItem.id, { behaviors }, true)}
+            allowScore={isGame}
           />
         </div>
       )}
 
-      {project && (
+      {/* Game rules only exist for AR Game projects, not AR experiences. */}
+      {project && isGame && (
         <div className="panel-section">
           <div className="panel-head">
             <div className="transform-title-wrap">
@@ -959,21 +827,19 @@ function InspectorPanel({
             settings={project.game_settings}
             items={allItems}
             onSave={onSaveGame}
-            forceEnabled={isGame}
+            forceEnabled
           />
-          {isGame && (
-            <div className="logic-summary">
-              <div className="tiny muted">
-                {(project.game_logic?.rules || []).length} rule{(project.game_logic?.rules || []).length === 1 ? '' : 's'}
-                {' · '}
-                {(project.game_logic?.variables || []).length} variable{(project.game_logic?.variables || []).length === 1 ? '' : 's'}
-                {' · '}script {project.game_logic?.script_enabled ? 'on' : 'off'}
-              </div>
-              <button type="button" className="btn small add-wide" onClick={() => setLogicOpen(true)}>
-                ⚙ Edit game logic
-              </button>
+          <div className="logic-summary">
+            <div className="tiny muted">
+              {(project.game_logic?.rules || []).length} rule{(project.game_logic?.rules || []).length === 1 ? '' : 's'}
+              {' · '}
+              {(project.game_logic?.variables || []).length} variable{(project.game_logic?.variables || []).length === 1 ? '' : 's'}
+              {' · '}script {project.game_logic?.script_enabled ? 'on' : 'off'}
             </div>
-          )}
+            <button type="button" className="btn small add-wide" onClick={() => setLogicOpen(true)}>
+              ⚙ Edit game logic
+            </button>
+          </div>
           {logicOpen && (
             <LogicEditor
               logic={project.game_logic}

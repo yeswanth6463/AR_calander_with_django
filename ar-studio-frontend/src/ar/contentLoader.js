@@ -4,7 +4,7 @@
  * caller (face: centimetres, object: bounding-box size).
  */
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { createGltfLoader } from './gltfLoader'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { createAnimationController } from './animation'
 import { createMediaPanel } from './mediaPanel'
@@ -15,7 +15,7 @@ const loadGltf = (url) => {
   if (!gltfCache.has(url)) {
     gltfCache.set(
       url,
-      new Promise((resolve, reject) => new GLTFLoader().load(url, resolve, undefined, reject)).catch((err) => {
+      new Promise((resolve, reject) => createGltfLoader().load(url, resolve, undefined, reject)).catch((err) => {
         gltfCache.delete(url)
         throw err
       })
