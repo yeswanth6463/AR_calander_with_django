@@ -8,6 +8,7 @@ from .views import (
     ModelAssetViewSet,
     ARExperienceViewSet,
     ExperienceItemViewSet,
+    compile_targets,
     register_target,
     track_image,
     target_features,
@@ -36,6 +37,11 @@ urlpatterns = [
         "projects/<uuid:project_id>/publish/",
         publish_project,
         name="project-publish",
+    ),
+    path(
+        "projects/<uuid:project_id>/compile-targets/",
+        compile_targets,
+        name="project-compile-targets",
     ),
     path("", include(router.urls)),
     path(

@@ -12,6 +12,7 @@ from .anchors import (
 )
 from .game_logic import clean_game_logic
 from .models import Project, ProjectPublication, TargetImage, ModelAsset, ARExperience, ExperienceItem
+from .service.target_bundle import bundle_payload, compile_status
 
 
 GAME_GOALS = {"none", "score", "collect_all"}
@@ -56,19 +57,20 @@ def clean_game_settings(value):
 
 
 def game_payload(project):
-    """Game settings as published, or None when the game is switched off.
+    """Game settings as published; None for anything but an AR Game project.
 
     AR Game projects are always games; their rule-builder logic rides along.
+    AR experiences (image / face / object) never publish game rules, even if
+    an older version of the studio saved game_settings on them.
     """
+    if getattr(project, "project_type", "") != "game":
+        return None
     settings = getattr(project, "game_settings", None)
-    is_game = getattr(project, "project_type", "") == "game"
     if not (isinstance(settings, dict) and settings.get("enabled")):
-        if not is_game:
-            return None
         settings = {"enabled": True, "goal": "none", "target_score": 0, "time_limit": 0,
                     "intro": "", "win_message": "", "lose_message": ""}
     payload = dict(settings, enabled=True)
-    if is_game and isinstance(project.game_logic, dict):
+    if isinstance(project.game_logic, dict):
         payload["logic"] = project.game_logic
     return payload
 
@@ -87,11 +89,13 @@ def project_extras(request, project):
         "project_type": project.project_type,
         "type_settings": project.type_settings or {},
         "sounds": sounds,
+        "compiled_targets": bundle_payload(request, project),
     }
 
 
 class ProjectSerializer(serializers.ModelSerializer):
     publication_slug = serializers.SerializerMethodField()
+    targets_compile = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -99,9 +103,12 @@ class ProjectSerializer(serializers.ModelSerializer):
             "id", "name", "slug", "description",
             "is_active", "project_type", "type_settings", "game_logic", "game_settings",
             "created_at", "updated_at",
-            "publication_slug",
+            "publication_slug", "targets_compile",
         ]
-        read_only_fields = ["id", "slug", "created_at", "updated_at", "publication_slug"]
+        read_only_fields = ["id", "slug", "created_at", "updated_at", "publication_slug", "targets_compile"]
+
+    def get_targets_compile(self, obj):
+        return compile_status(obj)
 
     def validate_game_settings(self, value):
         return clean_game_settings(value)
@@ -157,13 +164,21 @@ class TargetImageSerializer(serializers.ModelSerializer):
 
 
 class ModelAssetSerializer(serializers.ModelSerializer):
+    file_size = serializers.SerializerMethodField()
+
     class Meta:
         model = ModelAsset
         fields = [
-            "id", "project", "name", "model_file", "format",
-            "is_active", "created_at",
+            "id", "project", "name", "model_file", "format", "optimized",
+            "file_size", "is_active", "created_at",
         ]
-        read_only_fields = ["id", "created_at", "is_active"]
+        read_only_fields = ["id", "created_at", "is_active", "file_size"]
+
+    def get_file_size(self, obj):
+        try:
+            return obj.model_file.size if obj.model_file else None
+        except (OSError, ValueError):
+            return None
 
     def validate_project(self, project):
         request = self.context.get("request")
@@ -176,7 +191,7 @@ class ModelAssetSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         uploaded_file = attrs.get("model_file")
-        asset_format = attrs.get("format")
+        asset_format = attrs.get("format") or getattr(self.instance, "format", None)
         if uploaded_file and asset_format:
             extension = uploaded_file.name.rsplit(".", 1)[-1].lower()
             if extension != asset_format:
@@ -199,6 +214,19 @@ BEHAVIOR_ACTIONS = {
 }
 BEHAVIOR_SOUNDS = {"pop", "chime", "success", "fail"}
 MAX_TAP_ACTIONS = 10
+
+
+SCORE_ACTIONS = {"add_score"}
+
+
+def strip_score_actions(behaviors, project):
+    """Scoring only exists in AR Game projects: drop it everywhere else."""
+    if not isinstance(behaviors, dict) or getattr(project, "project_type", "") == "game":
+        return behaviors
+    on_tap = [r for r in behaviors.get("on_tap") or [] if r.get("action") not in SCORE_ACTIONS]
+    if not on_tap and not behaviors.get("start_hidden"):
+        return None
+    return {**behaviors, "on_tap": on_tap}
 
 
 def clean_behaviors(value):
@@ -281,6 +309,11 @@ class ExperienceItemSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+
+        if "behaviors" in attrs:
+            experience = attrs.get("experience") or getattr(self.instance, "experience", None)
+            if experience is not None:
+                attrs["behaviors"] = strip_score_actions(attrs["behaviors"], experience.project)
 
         if "scale" in attrs and not any(
             key in attrs for key in ("scale_x", "scale_y", "scale_z")
@@ -366,6 +399,8 @@ def _item_payload(request, item):
             "name": target.name,
             "image_url": request.build_absolute_uri(target.image.url),
             "width": target.target_width,
+            "index": (target.tracking_data or {}).get("index")
+            if isinstance(target.tracking_data, dict) else None,
         },
         "model": {
             "id": str(asset.id),
@@ -380,8 +415,13 @@ def _item_payload(request, item):
             "scale_xyz": [item.scale_x, item.scale_y, item.scale_z],
         },
         "animation": getattr(item, "animation", None),
-        "behaviors": getattr(item, "behaviors", None),
+        "behaviors": strip_score_actions(getattr(item, "behaviors", None), _project_of(item)),
     }
+
+
+def _project_of(item):
+    experience = getattr(item, "experience", None)
+    return experience.project if experience is not None else getattr(item, "project", None)
 
 
 def build_scene_snapshot(request, experience):

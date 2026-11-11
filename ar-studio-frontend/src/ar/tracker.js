@@ -189,11 +189,15 @@ const ensureRuntime = () => {
     matcher: new cv.BFMatcher(cv.NORM_HAMMING, false),
     gray: new cv.Mat(),
     enhanced: new cv.Mat(),
-    canvas: document.createElement('canvas'),
+    canvas: null,
     ctx: null,
   }
-  runtime.canvas.width = TRACK_CONFIG.processWidth
-  runtime.ctx = runtime.canvas.getContext('2d', { willReadFrequently: true })
+  // Workers have no DOM: they feed pixels in via frameFromImageData().
+  if (typeof document !== 'undefined') {
+    runtime.canvas = document.createElement('canvas')
+    runtime.canvas.width = TRACK_CONFIG.processWidth
+    runtime.ctx = runtime.canvas.getContext('2d', { willReadFrequently: true })
+  }
   return runtime
 }
 
@@ -491,8 +495,36 @@ export const extractFrame = (video, frameFeaturesOrOpts) => {
     rt.canvas.height = h
   }
   rt.ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, w, h)
+  return frameFromRgbaMat(cv.imread(rt.canvas), { srcX, srcY, srcW, srcH, w, h, vw, vh, roi, t0 })
+}
 
-  const rgba = cv.imread(rt.canvas)
+/**
+ * Build a matchable frame from RGBA pixels (e.g. in a Web Worker).
+ * `img` = { data, width, height } holding the source region
+ * (srcX, srcY, srcW, srcH) of a videoW × videoH camera frame, already
+ * scaled to img.width × img.height.
+ */
+export function frameFromImageData(img, { srcX = 0, srcY = 0, srcW, srcH, videoW, videoH, roi = null } = {}) {
+  const t0 = performance.now()
+  ensureRuntime()
+  const rgba = cv.matFromImageData(img)
+  return frameFromRgbaMat(rgba, {
+    srcX,
+    srcY,
+    srcW: srcW || img.width,
+    srcH: srcH || img.height,
+    w: img.width,
+    h: img.height,
+    vw: videoW || img.width,
+    vh: videoH || img.height,
+    roi,
+    t0,
+  })
+}
+
+function frameFromRgbaMat(rgba, { srcX, srcY, srcW, srcH, w, h, vw, vh, roi, t0 }) {
+  const rt = ensureRuntime()
+  const scale = w / srcW
   let keypoints
   let descriptors
   try {
@@ -573,6 +605,32 @@ export const grabGray = (source, width = TRACK_CONFIG.processWidth) => {
   }
 }
 
+/** Must match COMPILER_VERSION in AR_cal/api/service/target_compiler.py. */
+export const TARGET_BUNDLE_VERSION = 1
+
+const base64ToBytes = (b64) => {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+/**
+ * Fetch a server-compiled target bundle. Resolves to Map(targetId → entry),
+ * or null when the bundle is missing or from an unknown compiler version
+ * (callers then compile the target images locally).
+ */
+export async function loadTargetBundle(url) {
+  if (!url) return null
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Target bundle request failed (${res.status}).`)
+  const data = await res.json()
+  if (data?.format !== 'ar-studio-targets' || data.version !== TARGET_BUNDLE_VERSION) return null
+  const byId = new Map()
+  for (const entry of data.targets || []) if (entry?.id) byId.set(String(entry.id), entry)
+  return byId
+}
+
 export class ImageTracker {
   constructor({
     targetFeatures = TRACK_CONFIG.targetFeatures,
@@ -589,8 +647,7 @@ export class ImageTracker {
     this.targetW = 0
     this.targetH = 0
     this._cacheKey = ''
-    this._work = document.createElement('canvas')
-    this._work.width = 640
+    this._work = null // canvas, created on first compile() (main thread only)
   }
 
   get ready() {
@@ -622,17 +679,41 @@ export class ImageTracker {
       return { features: this.targetKeypoints.length, width: this.targetW, height: this.targetH }
     }
 
-    const rt = ensureRuntime()
+    ensureRuntime()
     const scale = Math.min(1, TRACK_CONFIG.targetCompileMaxEdge / Math.max(sw, sh))
-    this.targetW = Math.round(sw * scale)
-    this.targetH = Math.round(sh * scale)
-    this._work.width = this.targetW
-    this._work.height = this.targetH
+    const tw = Math.round(sw * scale)
+    const th = Math.round(sh * scale)
+    if (!this._work) this._work = document.createElement('canvas')
+    this._work.width = tw
+    this._work.height = th
 
     const ctx = this._work.getContext('2d', { willReadFrequently: true })
-    ctx.drawImage(source, 0, 0, this.targetW, this.targetH)
+    ctx.drawImage(source, 0, 0, tw, th)
+    return this._compileMat(cv.imread(this._work), tw, th, key)
+  }
 
-    const mat = cv.imread(this._work)
+  /** Compile from RGBA pixels { data, width, height } (works in a Worker). */
+  compileImageData(img) {
+    ensureRuntime()
+    const scale = Math.min(1, TRACK_CONFIG.targetCompileMaxEdge / Math.max(img.width, img.height))
+    const tw = Math.round(img.width * scale)
+    const th = Math.round(img.height * scale)
+    const src = cv.matFromImageData(img)
+    const mat = new cv.Mat()
+    try {
+      if (scale < 1) cv.resize(src, mat, new cv.Size(tw, th), 0, 0, cv.INTER_AREA)
+      else src.copyTo(mat)
+    } finally {
+      src.delete()
+    }
+    return this._compileMat(mat, tw, th, `px:${img.width}x${img.height}:${Math.random()}`)
+  }
+
+  /** ORB-compile an RGBA Mat (deleted here) of size tw × th. */
+  _compileMat(mat, tw, th, key) {
+    const rt = ensureRuntime()
+    this.targetW = tw
+    this.targetH = th
     const gray = new cv.Mat()
     const enhanced = new cv.Mat()
     const kps = new cv.KeyPointVector()
@@ -668,6 +749,34 @@ export class ImageTracker {
       kps.delete()
       desc.delete()
     }
+  }
+
+  /**
+   * Adopt one target from the server-compiled bundle (see loadTargetBundle)
+   * instead of running ORB on the image in the browser.
+   */
+  loadCompiled(entry) {
+    const n = Number(entry?.count) || 0
+    const desc = base64ToBytes(entry?.descriptors || '')
+    const kpBytes = base64ToBytes(entry?.keypoints || '')
+    if (n < this.minMatches || desc.length !== n * 32 || kpBytes.length !== n * 8) {
+      throw new Error('Compiled target is empty or corrupt.')
+    }
+    const view = new DataView(kpBytes.buffer, kpBytes.byteOffset, kpBytes.byteLength)
+    const keypoints = new Array(n)
+    for (let i = 0; i < n; i++) {
+      keypoints[i] = { x: view.getFloat32(i * 8, true), y: view.getFloat32(i * 8 + 4, true) }
+    }
+    ensureRuntime()
+    const mat = cv.matFromArray(n, 32, cv.CV_8U, desc)
+    if (this.trainDesc) this.trainDesc.delete()
+    this.trainDesc = mat
+    this.targetKeypoints = keypoints
+    this.targetW = entry.width
+    this.targetH = entry.height
+    this._cacheKey = `bundle:${entry.id}`
+    diag.refKps = n
+    return { features: n, width: this.targetW, height: this.targetH }
   }
 
   matchFrame(frame, { locked = false } = {}) {

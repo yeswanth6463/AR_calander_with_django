@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 
 from .models import ARExperience, ExperienceItem, Project, ProjectPublication, PublishedExperience, User
 from .serializer import _item_payload, build_scene_snapshot, game_payload, project_extras
+from .service.target_bundle import ensure_compiled
 
 
 def user_payload(user):
@@ -173,6 +174,7 @@ def publish_experience(request, experience_id):
                 status=400,
             )
 
+    ensure_compiled(experience.project)
     published, created = PublishedExperience.objects.get_or_create(
         experience=experience
     )
@@ -246,6 +248,7 @@ def publish_project(request, project_id):
             status=400,
         )
 
+    ensure_compiled(project)
     scenes = []
     for key in ordered:
         exp = by_id[key]
@@ -407,6 +410,7 @@ def public_experience(request, public_id):
                 "project_type": snapshot.get("project_type") or bundle.project.project_type,
                 "type_settings": snapshot.get("type_settings") or {},
                 "sounds": snapshot.get("sounds") or [],
+                "compiled_targets": snapshot.get("compiled_targets"),
             }
         )
 
@@ -508,6 +512,7 @@ def public_experience(request, public_id):
             "project_type": (snapshot or {}).get("project_type") or exp.project.project_type,
             "type_settings": (snapshot or {}).get("type_settings") or {},
             "sounds": (snapshot or {}).get("sounds") or [],
+            "compiled_targets": (snapshot or {}).get("compiled_targets"),
             "scene_count": 1 if items else 0,
             "scene_ids": [str(exp.id)],
             "scenes": [

@@ -1,9 +1,14 @@
 import { useState } from 'react'
 import { BEHAVIOR_ACTIONS, BEHAVIOR_SOUNDS, actionMeta, defaultValueFor } from '../ar/behaviors'
 
-const normalise = (behaviors) => ({
+// "Add points" needs a score, which only AR Game projects have.
+const SCORE_ACTIONS = new Set(['add_score'])
+
+const normalise = (behaviors, allowScore) => ({
   start_hidden: !!behaviors?.start_hidden,
-  on_tap: Array.isArray(behaviors?.on_tap) ? behaviors.on_tap.map((r) => ({ ...r })) : [],
+  on_tap: Array.isArray(behaviors?.on_tap)
+    ? behaviors.on_tap.filter((r) => allowScore || !SCORE_ACTIONS.has(r?.action)).map((r) => ({ ...r }))
+    : [],
 })
 
 // Rules that would be rejected by the API (missing value) are held back
@@ -23,9 +28,11 @@ const isComplete = (rule) => {
  *   behaviors    current value from the item
  *   otherItems   [{ id, label }] — items this one can show/hide
  *   onSave(next) persist (called with the full behaviors object)
+ *   allowScore   offer "Add points" (AR Game projects only)
  */
-export default function BehaviorsPanel({ behaviors, otherItems, onSave }) {
-  const [draft, setDraft] = useState(() => normalise(behaviors))
+export default function BehaviorsPanel({ behaviors, otherItems, onSave, allowScore = false }) {
+  const [draft, setDraft] = useState(() => normalise(behaviors, allowScore))
+  const actions = allowScore ? BEHAVIOR_ACTIONS : BEHAVIOR_ACTIONS.filter((a) => !SCORE_ACTIONS.has(a.id))
 
   const save = (next) => {
     setDraft(next)
@@ -46,7 +53,11 @@ export default function BehaviorsPanel({ behaviors, otherItems, onSave }) {
   }
 
   const addRule = () => {
-    save({ ...draft, on_tap: [...draft.on_tap, { action: 'add_score', value: 10 }] })
+    const first = allowScore ? actionMeta('add_score') : actions[0]
+    const value = first.id === 'add_score' ? 10 : first.value ? defaultValueFor(first.value) : undefined
+    const rule = { action: first.id, value }
+    if (first.value === 'item') rule.value = otherItems[0]?.id ?? ''
+    save({ ...draft, on_tap: [...draft.on_tap, rule] })
   }
 
   const removeRule = (index) => {
@@ -83,7 +94,7 @@ export default function BehaviorsPanel({ behaviors, otherItems, onSave }) {
         return (
           <div key={index} className={`behavior-rule ${incomplete ? 'incomplete' : ''}`}>
             <select value={rule.action} onChange={(e) => changeAction(index, e.target.value)} aria-label="Action">
-              {BEHAVIOR_ACTIONS.map((a) => (
+              {actions.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.label}
                 </option>

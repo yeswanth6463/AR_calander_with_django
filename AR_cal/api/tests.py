@@ -165,3 +165,214 @@ class ProjectTypesTests(APITestCase):
         self.assertTrue(data["game"]["enabled"])
         self.assertEqual(data["game"]["logic"]["rules"][0]["actions"][0]["text"], "Go")
         self.assertEqual(len(data["sounds"]), 1)
+
+
+def _textured_png(width=640, height=480, seed=7):
+    """A detailed random-rectangles image that ORB can track."""
+    import cv2
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    img = np.full((height, width, 3), 255, np.uint8)
+    for _ in range(260):
+        x, y = int(rng.integers(0, width)), int(rng.integers(0, height))
+        w, h = int(rng.integers(8, 70)), int(rng.integers(8, 70))
+        color = tuple(int(c) for c in rng.integers(0, 255, 3))
+        cv2.rectangle(img, (x, y), (x + w, y + h), color, -1)
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    return buf.tobytes()
+
+
+@override_settings(MEDIA_ROOT=MEDIA)
+class TargetCompilerTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="c", email="c@example.com", password="pw-12345678")
+        self.client.force_authenticate(self.user)
+        res = self.client.post("/api/projects/", {"name": "Cards", "project_type": "image_ar"}, format="json")
+        self.project = Project.objects.get(id=res.data["id"])
+
+    def add_target(self, name, data):
+        return TargetImage.objects.create(
+            project=self.project, name=name, image=SimpleUploadedFile(f"{name}.png", data)
+        )
+
+    def test_compile_builds_one_bundle_with_browser_compatible_entries(self):
+        import base64
+        import json
+
+        good = self.add_target("good", _textured_png())
+        blank = self.add_target("blank", PNG)
+        status = self.client.get(f"/api/projects/{self.project.id}/compile-targets/").data
+        self.assertTrue(status["stale"])
+
+        res = self.client.post(f"/api/projects/{self.project.id}/compile-targets/")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertFalse(res.data["stale"])
+        self.assertEqual((res.data["total"], res.data["compiled"]), (2, 1))
+
+        good.refresh_from_db()
+        blank.refresh_from_db()
+        self.assertEqual(good.tracking_data["status"], "ready")
+        self.assertEqual(good.tracking_data["index"], 0)
+        self.assertGreaterEqual(good.tracking_data["rating"], 3)
+        self.assertEqual(blank.tracking_data["status"], "failed")
+        self.assertIsNone(blank.tracking_data["index"])
+
+        self.project.refresh_from_db()
+        with self.project.compiled_targets.open("rb") as fh:
+            bundle = json.loads(fh.read())
+        self.assertEqual((bundle["format"], bundle["version"]), ("ar-studio-targets", 1))
+        [entry] = bundle["targets"]
+        self.assertEqual(entry["id"], str(good.id))
+        self.assertEqual((entry["width"], entry["height"]), (640, 480))
+        self.assertEqual(len(base64.b64decode(entry["descriptors"])), entry["count"] * 32)
+        self.assertEqual(len(base64.b64decode(entry["keypoints"])), entry["count"] * 8)
+
+        # Adding a target makes the bundle stale again.
+        self.add_target("another", _textured_png(seed=3))
+        res = self.client.get(f"/api/projects/{self.project.id}/")
+        self.assertTrue(res.data["targets_compile"]["stale"])
+
+    def test_large_targets_are_compiled_at_max_edge(self):
+        target = self.add_target("big", _textured_png(2160, 1080))
+        self.client.post(f"/api/projects/{self.project.id}/compile-targets/")
+        target.refresh_from_db()
+        self.assertEqual((target.tracking_data["width"], target.tracking_data["height"]), (1080, 540))
+        self.assertEqual(target.tracking_data["source_width"], 2160)
+
+    def test_publish_compiles_stale_targets_and_ships_bundle(self):
+        target = self.add_target("good", _textured_png())
+        asset = ModelAsset.objects.create(
+            project=self.project, name="a.glb", format="glb",
+            model_file=SimpleUploadedFile("a.glb", b"data"),
+        )
+        exp = self.client.post(
+            "/api/experiences/", {"project": str(self.project.id), "name": "Main"}, format="json"
+        ).data["id"]
+        ExperienceItem.objects.create(
+            experience_id=exp, target_image=target, model_asset=asset, name="i"
+        )
+        res = self.client.post(
+            f"/api/projects/{self.project.id}/publish/", {"scene_ids": [exp]}, format="json"
+        )
+        self.assertIn(res.status_code, (200, 201), res.data)
+        public = self.client.get(f"/api/public/{res.data['published_experience_id']}/").data
+        self.assertEqual(public["compiled_targets"]["count"], 1)
+        self.assertIn("/media/compiled_targets/", public["compiled_targets"]["url"])
+        self.assertEqual(public["items"][0]["target"]["index"], 0)
+
+
+class TargetQualityTests(APITestCase):
+    def _write(self, img):
+        import cv2
+
+        fd, path = tempfile.mkstemp(suffix=".png", dir=MEDIA)
+        import os
+
+        os.close(fd)
+        cv2.imwrite(path, img)
+        return path
+
+    def test_repeated_texture_rates_low_and_detailed_image_rates_high(self):
+        import cv2
+        import numpy as np
+
+        from .service.target_compiler import CONFIG, compile_target
+
+        tile = np.full((60, 60, 3), 255, np.uint8)
+        cv2.rectangle(tile, (8, 8), (30, 30), (20, 20, 20), -1)
+        cv2.circle(tile, (44, 44), 9, (180, 40, 40), -1)
+        tiles = np.tile(tile, (15, 20, 1))
+        bad = compile_target(self._write(tiles))["quality"]
+        self.assertLessEqual(bad["rating"], 2)
+        self.assertLess(bad["uniqueness"], 0.3)
+
+        good_img = cv2.imdecode(np.frombuffer(_textured_png(1200, 900), np.uint8), cv2.IMREAD_COLOR)
+        good = compile_target(self._write(good_img))
+        q = good["quality"]
+        self.assertGreaterEqual(q["rating"], 4)
+        self.assertLessEqual(q["feature_count"], CONFIG["budget"])
+        self.assertEqual(len(good["points"]), len(good["descriptors"]))
+        self.assertGreaterEqual(q["scale_levels"], 4)
+
+
+class ExperienceGameRemovedTests(APITestCase):
+    def test_ar_experience_never_publishes_game_rules(self):
+        from .serializer import game_payload
+
+        user = User.objects.create_user(username="g", email="g@example.com", password="pw-12345678")
+        project = Project.objects.create(
+            user=user, name="Exp", project_type="image_ar",
+            game_settings={"enabled": True, "goal": "score", "target_score": 10, "time_limit": 30},
+        )
+        self.assertIsNone(game_payload(project))
+        game = Project.objects.create(user=user, name="G", project_type="game")
+        self.assertTrue(game_payload(game)["enabled"])
+
+
+@override_settings(MEDIA_ROOT=MEDIA)
+class ScoreActionRemovedTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="s", email="s@example.com", password="pw-12345678")
+        self.client.force_authenticate(self.user)
+
+    def _item(self, project_type):
+        project = Project.objects.create(user=self.user, name=project_type, project_type=project_type)
+        exp = self.client.post("/api/experiences/", {"project": str(project.id), "name": "M"}, format="json").data["id"]
+        target = TargetImage.objects.create(project=project, name="t", image=SimpleUploadedFile("t.png", PNG))
+        asset = ModelAsset.objects.create(project=project, name="a.glb", format="glb",
+                                          model_file=SimpleUploadedFile("a.glb", b"data"))
+        return ExperienceItem.objects.create(experience_id=exp, target_image=target, model_asset=asset, name="i")
+
+    def test_add_score_is_dropped_outside_game_projects(self):
+        from .serializer import _item_payload
+
+        rules = {"start_hidden": False, "on_tap": [{"action": "add_score", "value": 5}, {"action": "hide_self"}]}
+        item = self._item("image_ar")
+        res = self.client.patch(f"/api/items/{item.id}/", {"behaviors": rules}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual([r["action"] for r in res.data["behaviors"]["on_tap"]], ["hide_self"])
+
+        # Rules saved before this change are also removed from published payloads.
+        ExperienceItem.objects.filter(id=item.id).update(behaviors=rules)
+        item.refresh_from_db()
+        self.assertEqual(
+            [r["action"] for r in _item_payload(_Req(), item)["behaviors"]["on_tap"]],
+            ["hide_self"],
+        )
+
+        game_item = self._item("game")
+        res = self.client.patch(f"/api/items/{game_item.id}/", {"behaviors": rules}, format="json")
+        self.assertEqual(len(res.data["behaviors"]["on_tap"]), 2)
+
+
+class _Req:
+    def build_absolute_uri(self, url):
+        return url
+
+
+@override_settings(MEDIA_ROOT=MEDIA)
+class AssetOptimizeTests(APITestCase):
+    def test_optimized_upload_flag_size_and_replacement_format(self):
+        user = User.objects.create_user(username="o", email="o@example.com", password="pw-12345678")
+        self.client.force_authenticate(user)
+        project = Project.objects.create(user=user, name="P", project_type="image_ar")
+        res = self.client.post("/api/assets/", {
+            "project": str(project.id), "name": "drone", "format": "glb", "optimized": "true",
+            "model_file": SimpleUploadedFile("drone.glb", b"x" * 1234),
+        }, format="multipart")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertTrue(res.data["optimized"])
+        self.assertEqual(res.data["file_size"], 1234)
+
+        # Replacing the file (studio "Optimize" button) must keep the format.
+        bad = self.client.patch(f"/api/assets/{res.data['id']}/", {
+            "model_file": SimpleUploadedFile("drone.png", PNG),
+        }, format="multipart")
+        self.assertEqual(bad.status_code, 400)
+        ok = self.client.patch(f"/api/assets/{res.data['id']}/", {
+            "model_file": SimpleUploadedFile("drone.glb", b"y" * 99), "optimized": "true",
+        }, format="multipart")
+        self.assertEqual(ok.status_code, 200, ok.data)
+        self.assertEqual(ok.data["file_size"], 99)

@@ -61,6 +61,20 @@ class Project(models.Model):
             "target_score, time_limit (s), intro/win/lose messages."
         ),
     )
+    # Compiled image-target bundle (MindAR ".mind" equivalent), built on the
+    # server by api/service/target_bundle.py and loaded by the AR viewer.
+    compiled_targets = models.FileField(
+        upload_to="compiled_targets/",
+        blank=True,
+        max_length=255,
+    )
+    targets_signature = models.CharField(
+        max_length=40,
+        blank=True,
+        default="",
+        help_text="Signature of the target set the bundle was compiled from.",
+    )
+    targets_compiled_at = models.DateTimeField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -145,6 +159,10 @@ class ModelAsset(models.Model):
     name = models.CharField(max_length=150)
     model_file = models.FileField(upload_to="models/")
     format = models.CharField(max_length=10, choices=FORMAT_CHOICES)
+    optimized = models.BooleanField(
+        default=False,
+        help_text="Set when the studio ran the AR model optimiser before upload.",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
