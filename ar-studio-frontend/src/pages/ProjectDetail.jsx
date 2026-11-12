@@ -345,6 +345,24 @@ function InspectorPanel({
     }
   }
 
+  const changeModel = async (newAssetId) => {
+    if (!selected || !newAssetId) return
+    setBusy(true)
+    onError('')
+    try {
+      await api(`/experiences/${selected.id}/`, {
+        method: 'PATCH',
+        body: { model_asset: newAssetId },
+      })
+      onNotice('Model replaced successfully.')
+      await reload()
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const publish = async () => {
     if (!selected) return
     setBusy(true)
@@ -426,6 +444,26 @@ function InspectorPanel({
           ))}
         </div>
       </div>
+
+      {selected && form && (
+        <div className="panel-section">
+          <div className="panel-head"><h2>Active Model</h2></div>
+          <div className="inspector-form">
+            <label className="tiny muted">Switch / Replace Model</label>
+            <select
+              value={selected.model_asset || ''}
+              onChange={(e) => changeModel(e.target.value)}
+              disabled={busy}
+            >
+              {assets.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name} ({a.format.toUpperCase()})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
 
       {selected && form && (
         <div className="panel-section">

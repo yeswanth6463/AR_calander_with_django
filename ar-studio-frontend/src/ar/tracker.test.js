@@ -260,3 +260,33 @@ test('track reports a valid homography and projected corners', () => {
   assert.deepEqual(result.H, [1, 0, 100, 0, 1, 100, 0, 0, 1])
   assert.equal(homographyResult.deleted, true)
 })
+
+test('track chooses the target with the highest match count in multi-target mode', () => {
+  homographyResult = validHomography()
+  findThrows = false
+  perspectiveThrows = false
+  perspectiveCalls = 0
+
+  const tracker = new ImageTracker()
+  tracker.targets.set('item-january', {
+    id: 'item-january',
+    trainDesc: { rows: 50, delete() {} },
+    keypoints: Array.from({ length: 50 }, (_, i) => ({ x: i, y: i })),
+    targetW: 800,
+    targetH: 600,
+  })
+  tracker.targets.set('item-february', {
+    id: 'item-february',
+    trainDesc: { rows: 100, delete() {} },
+    keypoints: Array.from({ length: 100 }, (_, i) => ({ x: i, y: i })),
+    targetW: 1000,
+    targetH: 800,
+  })
+
+  const result = tracker.track(video)
+  assert.equal(result.found, true)
+  assert.ok(result.targetId === 'item-january' || result.targetId === 'item-february')
+  assert.equal(result.matchCount, 10)
+  assert.ok(result.corners.length === 4)
+})
+

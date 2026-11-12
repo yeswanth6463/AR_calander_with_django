@@ -65,6 +65,7 @@ export class ImageTracker {
     this.frameFeatures = frameFeatures;
     this.ratio = ratio;
     this.minMatches = minMatches;
+    this.targets = new Map();
     this.targetKeypoints = [];
     this.trainDesc = null;
     this.targetW = 0;
@@ -74,22 +75,37 @@ export class ImageTracker {
   }
 
   get ready() {
-    return this.trainDesc !== null;
+    return this.targets.size > 0 || (this.trainDesc !== null && this.trainDesc.rows > 0);
   }
 
-  compile(source) {
+  clearTargets() {
+    for (const t of this.targets.values()) {
+      t.trainDesc?.delete?.();
+    }
+    this.targets.clear();
+    this.trainDesc = null;
+    this.targetKeypoints = [];
+  }
+
+  dispose() {
+    this.clearTargets();
+  }
+
+  compile(source, id = "default") {
     const sw = source.videoWidth || source.naturalWidth || source.width;
     const sh = source.videoHeight || source.naturalHeight || source.height;
     if (!sw || !sh) throw new Error("Target has no size.");
 
     const scale = Math.min(1, 960 / Math.max(sw, sh));
-    this.targetW = Math.round(sw * scale);
-    this.targetH = Math.round(sh * scale);
-    this._work.width = this.targetW;
-    this._work.height = this.targetH;
+    const targetW = Math.round(sw * scale);
+    const targetH = Math.round(sh * scale);
+    this.targetW = targetW;
+    this.targetH = targetH;
+    this._work.width = targetW;
+    this._work.height = targetH;
 
     const ctx = this._work.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(source, 0, 0, this.targetW, this.targetH);
+    ctx.drawImage(source, 0, 0, targetW, targetH);
 
     let mat = null;
     let gray = null;
@@ -120,14 +136,30 @@ export class ImageTracker {
         keypoints.push({ x: kp.pt.x, y: kp.pt.y });
       }
 
-      if (this.trainDesc) this.trainDesc.delete();
+      if (this.targets.has(id)) {
+        const prev = this.targets.get(id);
+        if (prev.trainDesc && prev.trainDesc !== this.trainDesc) {
+          prev.trainDesc.delete();
+        }
+      }
+
+      this.targets.set(id, {
+        id,
+        trainDesc: desc,
+        keypoints,
+        targetW,
+        targetH,
+      });
+
       this.trainDesc = desc;
-      keepDesc = true;
       this.targetKeypoints = keypoints;
+      keepDesc = true;
+
       return {
+        id,
         features: keypoints.length,
-        width: this.targetW,
-        height: this.targetH,
+        width: targetW,
+        height: targetH,
       };
     } finally {
       mat?.delete?.();
@@ -174,58 +206,109 @@ export class ImageTracker {
       cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
       orb.detectAndCompute(gray, mask, kps, desc);
 
-      if (desc.rows < this.minMatches || !this.trainDesc || this.trainDesc.rows === 0) {
+      if (desc.rows < this.minMatches) {
         return result;
       }
 
+      const targetList =
+        this.targets.size > 0
+          ? Array.from(this.targets.values())
+          : this.trainDesc
+          ? [
+              {
+                id: "default",
+                trainDesc: this.trainDesc,
+                keypoints: this.targetKeypoints,
+                targetW: this.targetW,
+                targetH: this.targetH,
+              },
+            ]
+          : [];
+
+      if (targetList.length === 0) {
+        return { found: false, reason: "no targets loaded" };
+      }
+
       let matcher = null;
-      let matches = null;
-      const srcPts = [];
-      const dstPts = [];
+      let bestTarget = null;
+      let bestSrcPts = null;
+      let bestDstPts = null;
+      let maxMatchCount = 0;
 
       try {
         matcher = new cv.BFMatcher(cv.NORM_HAMMING, false);
-        matches = new cv.DMatchVectorVector();
-        matcher.knnMatch(desc, this.trainDesc, matches, 2);
 
-        for (let i = 0; i < matches.size(); i++) {
-          const pair = matches.get(i);
+        for (const target of targetList) {
+          if (!target.trainDesc || target.trainDesc.rows === 0) continue;
+          let matches = null;
+          const srcPts = [];
+          const dstPts = [];
+
           try {
-            if (pair.size() === 2) {
-              const m = pair.get(0);
-              const n = pair.get(1);
-              if (
-                m.distance < this.ratio * n.distance &&
-                m.queryIdx < kps.size() &&
-                m.trainIdx < this.targetKeypoints.length
-              ) {
-                const fp = kps.get(m.queryIdx).pt;
-                srcPts.push([
-                  this.targetKeypoints[m.trainIdx].x,
-                  this.targetKeypoints[m.trainIdx].y,
-                ]);
-                dstPts.push([fp.x, fp.y]);
+            matches = new cv.DMatchVectorVector();
+            matcher.knnMatch(desc, target.trainDesc, matches, 2);
+
+            for (let i = 0; i < matches.size(); i++) {
+              const pair = matches.get(i);
+              try {
+                if (pair.size() === 2) {
+                  const m = pair.get(0);
+                  const n = pair.get(1);
+                  if (
+                    m.distance < this.ratio * n.distance &&
+                    m.queryIdx < kps.size() &&
+                    m.trainIdx < target.keypoints.length
+                  ) {
+                    const fp = kps.get(m.queryIdx).pt;
+                    srcPts.push([
+                      target.keypoints[m.trainIdx].x,
+                      target.keypoints[m.trainIdx].y,
+                    ]);
+                    dstPts.push([fp.x, fp.y]);
+                  }
+                }
+              } finally {
+                pair.delete();
               }
             }
+
+            if (srcPts.length > maxMatchCount) {
+              maxMatchCount = srcPts.length;
+              bestTarget = target;
+              bestSrcPts = srcPts;
+              bestDstPts = dstPts;
+            }
           } finally {
-            pair.delete();
+            matches?.delete?.();
           }
         }
       } finally {
-        matches?.delete?.();
         matcher?.delete?.();
       }
 
-      if (srcPts.length < 4) {
-        result = { found: false, reason: `only ${srcPts.length} matches` };
+      if (maxMatchCount < this.minMatches || !bestTarget || bestSrcPts.length < 4) {
+        result = {
+          found: false,
+          reason: maxMatchCount > 0 ? `only ${maxMatchCount} matches` : "no matches",
+        };
       } else {
         let src = null;
         let dst = null;
         let H = null;
 
         try {
-          src = cv.matFromArray(srcPts.length, 1, cv.CV_32FC2, srcPts.flat());
-          dst = cv.matFromArray(dstPts.length, 1, cv.CV_32FC2, dstPts.flat());
+          src = cv.matFromArray(
+            bestSrcPts.length,
+            1,
+            cv.CV_32FC2,
+            bestSrcPts.flat()
+          );
+          dst = cv.matFromArray(
+            bestDstPts.length,
+            1,
+            cv.CV_32FC2,
+            bestDstPts.flat()
+          );
           H = cv.findHomography(src, dst, cv.RANSAC, 5.0);
           const h = readHomography(H);
 
@@ -238,9 +321,9 @@ export class ImageTracker {
           } else {
             const cornersPx = [
               [0, 0],
-              [this.targetW - 1, 0],
-              [this.targetW - 1, this.targetH - 1],
-              [0, this.targetH - 1],
+              [bestTarget.targetW - 1, 0],
+              [bestTarget.targetW - 1, bestTarget.targetH - 1],
+              [0, bestTarget.targetH - 1],
             ];
             let cornersMat = null;
             let out = null;
@@ -284,6 +367,9 @@ export class ImageTracker {
                 if (finite && isConvexClockwise && area > 0.0005 * vw * vh && area < 4 * vw * vh) {
                   result = {
                     found: true,
+                    targetId: bestTarget.id,
+                    targetW: bestTarget.targetW,
+                    targetH: bestTarget.targetH,
                     corners,
                     // p_full = p_work / scale  => left-multiply rows 0,1 by 1/scale
                     H: [
@@ -291,7 +377,7 @@ export class ImageTracker {
                       h[3] / scale, h[4] / scale, h[5] / scale,
                       h[6], h[7], h[8],
                     ],
-                    matchCount: srcPts.length,
+                    matchCount: bestSrcPts.length,
                   };
                 } else {
                   result = { found: false, reason: "invalid geometry" };

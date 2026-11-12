@@ -201,6 +201,61 @@ def public_experience(request, public_id):
     target = exp.target_image
     asset = exp.model_asset
 
+    project = exp.project
+    available_models = [
+        {
+            "id": str(m.id),
+            "name": m.name,
+            "url": request.build_absolute_uri(m.model_file.url),
+            "format": m.format,
+        }
+        for m in project.model_assets.filter(is_active=True).order_by("created_at")
+    ]
+
+    all_exps = (
+        project.experiences.filter(
+            target_image__isnull=False, model_asset__isnull=False
+        )
+        .select_related("target_image", "model_asset")
+        .order_by("created_at", "id")
+    )
+
+    items = []
+    for item_exp in all_exps:
+        t = item_exp.target_image
+        m = item_exp.model_asset
+        items.append(
+            {
+                "id": str(item_exp.id),
+                "name": item_exp.name or t.name,
+                "target": {
+                    "id": str(t.id),
+                    "name": t.name,
+                    "image_url": request.build_absolute_uri(t.image.url),
+                    "width": t.target_width,
+                },
+                "model": {
+                    "id": str(m.id),
+                    "name": m.name,
+                    "url": request.build_absolute_uri(m.model_file.url),
+                    "format": m.format,
+                },
+                "transform": {
+                    "position": [
+                        item_exp.position_x,
+                        item_exp.position_y,
+                        item_exp.position_z,
+                    ],
+                    "rotation": [
+                        item_exp.rotation_x,
+                        item_exp.rotation_y,
+                        item_exp.rotation_z,
+                    ],
+                    "scale": item_exp.scale,
+                },
+            }
+        )
+
     return Response(
         {
             "public_id": str(published.public_id),
@@ -224,5 +279,8 @@ def public_experience(request, public_id):
                 "rotation": [exp.rotation_x, exp.rotation_y, exp.rotation_z],
                 "scale": exp.scale,
             },
+            "project_id": str(project.id),
+            "available_models": available_models,
+            "items": items,
         }
     )
