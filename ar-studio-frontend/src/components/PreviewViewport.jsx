@@ -15,7 +15,6 @@ import {
 } from '../ar/sceneTransform'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { createRectGizmo } from './RectGizmo'
-import UnityGizmoToolbar from './UnityGizmoToolbar'
 import { drawFeaturePreview } from '../ar/targetFeaturePreview'
 import ViewAxisGizmo from './ViewAxisGizmo'
 
@@ -50,12 +49,12 @@ export default function PreviewViewport({
   const [modelState, setModelState] = useState('')
   const [transformMode, setTransformMode] = useState('translate')
   const [space, setSpace] = useState('world')
-  const [snapEnabled, setSnapEnabled] = useState(false)
-  const [gizmoSize, setGizmoSize] = useState(1)
+  const snapEnabled = false
+  const gizmoSize = 1
   const [modelReady, setModelReady] = useState(false)
   const [showTargetFeatures, setShowTargetFeatures] = useState(false)
   const targetPlanesRef = useRef(new Map())
-  const [rectOrientation, setRectOrientation] = useState('horizontal')
+  const rectOrientation = 'horizontal'
   const onTransformChangeRef = useRef(onTransformChange)
   const onAnimationControllerRef = useRef(onAnimationController)
   const transformModeRef = useRef(transformMode)
@@ -90,6 +89,38 @@ export default function PreviewViewport({
   useEffect(() => {
     transformModeRef.current = transformMode
   }, [transformMode])
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      const active = document.activeElement
+      if (
+        active?.tagName === 'INPUT' ||
+        active?.tagName === 'TEXTAREA' ||
+        active?.tagName === 'SELECT' ||
+        active?.isContentEditable ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey
+      ) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+      const modes = {
+        q: 'view',
+        w: 'translate',
+        e: 'rotate',
+        r: 'scale',
+        t: 'rect',
+        y: 'universal',
+      }
+      if (modes[key]) setTransformMode(modes[key])
+      else if (key === 'x') setSpace((current) => (current === 'world' ? 'local' : 'world'))
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   useEffect(() => {
     onTransformChangeRef.current = onTransformChange
@@ -456,6 +487,152 @@ export default function PreviewViewport({
     transformControlsRef.current = transformControls
     scene.add(transformControls.getHelper())
 
+    const touchPointers = new Map()
+    const touchRaycaster = new THREE.Raycaster()
+    const touchNdc = new THREE.Vector2()
+    const touchPlane = new THREE.Plane()
+    const touchHit = new THREE.Vector3()
+    let touchGesture = null
+
+    const setTouchRay = (point) => {
+      const bounds = renderer.domElement.getBoundingClientRect()
+      touchNdc.set(
+        ((point.x - bounds.left) / bounds.width) * 2 - 1,
+        -((point.y - bounds.top) / bounds.height) * 2 + 1
+      )
+      touchRaycaster.setFromCamera(touchNdc, camera)
+    }
+
+    const rebaseTouchGesture = () => {
+      const group = modelGroupRef.current
+      const points = Array.from(touchPointers.values()).slice(0, 2)
+      if (!group || !points.length) {
+        touchGesture = null
+        return
+      }
+
+      if (points.length === 1) {
+        setTouchRay(points[0])
+        camera.getWorldDirection(touchHit)
+        touchPlane.setFromNormalAndCoplanarPoint(
+          touchHit,
+          group.getWorldPosition(new THREE.Vector3())
+        )
+        const startPoint = new THREE.Vector3()
+        if (!touchRaycaster.ray.intersectPlane(touchPlane, startPoint)) {
+          touchGesture = null
+          return
+        }
+        touchGesture = {
+          mode: 'move',
+          group,
+          startPosition: group.position.clone(),
+          startPoint,
+        }
+        return
+      }
+
+      const [a, b] = points
+      touchGesture = {
+        mode: 'rotate-scale',
+        group,
+        startAngle: Math.atan2(b.y - a.y, b.x - a.x),
+        startDistance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+        startQuaternion: group.quaternion.clone(),
+        startScale: group.scale.clone(),
+      }
+    }
+
+    const onTouchPointerDown = (event) => {
+      if (event.pointerType !== 'touch') return
+      if (!renderer.domElement.contains(event.target)) return
+
+      if (!touchPointers.size) {
+        const group = modelGroupRef.current
+        if (!group) return
+        setTouchRay({ x: event.clientX, y: event.clientY })
+        group.updateWorldMatrix(true, true)
+        if (!touchRaycaster.intersectObject(group, true).length) return
+      }
+
+      touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+      draggingRef.current = true
+      controls.enabled = false
+      renderer.domElement.setPointerCapture(event.pointerId)
+      rebaseTouchGesture()
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+
+    const onTouchPointerMove = (event) => {
+      if (event.pointerType !== 'touch' || !touchPointers.has(event.pointerId)) return
+      touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+      event.preventDefault()
+      event.stopImmediatePropagation()
+
+      const gesture = touchGesture
+      if (!gesture || gesture.group !== modelGroupRef.current) return
+
+      const points = Array.from(touchPointers.values()).slice(0, 2)
+      if (gesture.mode === 'move' && points.length === 1) {
+        setTouchRay(points[0])
+        const point = new THREE.Vector3()
+        if (!touchRaycaster.ray.intersectPlane(touchPlane, point)) return
+        gesture.group.position
+          .copy(gesture.startPosition)
+          .add(point.sub(gesture.startPoint))
+      } else if (gesture.mode === 'rotate-scale' && points.length >= 2) {
+        const [a, b] = points
+        const angle = Math.atan2(b.y - a.y, b.x - a.x)
+        let angleDelta = angle - gesture.startAngle
+        if (angleDelta > Math.PI) angleDelta -= Math.PI * 2
+        if (angleDelta < -Math.PI) angleDelta += Math.PI * 2
+
+        const axis = camera.getWorldDirection(new THREE.Vector3())
+        const parentRotation = gesture.group.parent
+          ? gesture.group.parent.getWorldQuaternion(new THREE.Quaternion()).invert()
+          : new THREE.Quaternion()
+        axis.applyQuaternion(parentRotation)
+        const rotation = new THREE.Quaternion().setFromAxisAngle(axis, angleDelta)
+        gesture.group.quaternion.copy(rotation.multiply(gesture.startQuaternion))
+
+        const distance = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y))
+        const factor = distance / gesture.startDistance
+        gesture.group.scale.set(
+          THREE.MathUtils.clamp(gesture.startScale.x * factor, 0.01, 100),
+          THREE.MathUtils.clamp(gesture.startScale.y * factor, 0.01, 100),
+          THREE.MathUtils.clamp(gesture.startScale.z * factor, 0.01, 100)
+        )
+      } else {
+        rebaseTouchGesture()
+        return
+      }
+
+      rectGizmoRef.current?.invalidateBounds?.()
+      reportTransform(false)
+    }
+
+    const onTouchPointerUp = (event) => {
+      if (event.pointerType !== 'touch' || !touchPointers.has(event.pointerId)) return
+      touchPointers.delete(event.pointerId)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+
+      reportTransform(true)
+      if (touchPointers.size) {
+        rebaseTouchGesture()
+      } else {
+        touchGesture = null
+        draggingRef.current = false
+        controls.enabled = true
+      }
+    }
+
+    document.addEventListener('pointerdown', onTouchPointerDown, { capture: true, passive: false })
+    document.addEventListener('pointermove', onTouchPointerMove, { capture: true, passive: false })
+    document.addEventListener('pointerup', onTouchPointerUp, { capture: true, passive: false })
+    document.addEventListener('pointercancel', onTouchPointerUp, { capture: true, passive: false })
+
     // 3. Rect Gizmo (Screenshot 3: corner scale handles & center translate handle)
     const rectGizmo = createRectGizmo({
       scene,
@@ -536,6 +713,13 @@ export default function PreviewViewport({
       mediaPanelsRef.current.clear()
       rectGizmo.dispose()
       rectGizmoRef.current = null
+      document.removeEventListener('pointerdown', onTouchPointerDown, true)
+      document.removeEventListener('pointermove', onTouchPointerMove, true)
+      document.removeEventListener('pointerup', onTouchPointerUp, true)
+      document.removeEventListener('pointercancel', onTouchPointerUp, true)
+      touchPointers.clear()
+      touchGesture = null
+      draggingRef.current = false
       rotateControls.detach()
       rotateControls.dispose()
       rotateControlsRef.current = null
@@ -578,6 +762,24 @@ export default function PreviewViewport({
     const rg = rectGizmoRef.current
     const model = modelGroupRef.current
     if (!tc) return
+
+    if (window.matchMedia('(pointer: coarse)').matches) {
+      tc.detach()
+      tc.enabled = false
+      if (tc.getHelper()) tc.getHelper().visible = false
+      rc?.detach()
+      if (rc) {
+        rc.enabled = false
+        if (rc.getHelper()) rc.getHelper().visible = false
+      }
+      sc?.detach()
+      if (sc) {
+        sc.enabled = false
+        if (sc.getHelper()) sc.getHelper().visible = false
+      }
+      rg?.setVisible(false)
+      return
+    }
 
     tc.setSpace(space)
     tc.setSize(gizmoSize * 1.15)
@@ -732,7 +934,7 @@ export default function PreviewViewport({
   useEffect(() => {
     syncGizmos()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transformMode, space, snapEnabled, gizmoSize, modelReady, rectOrientation])
+  }, [transformMode, space, modelReady])
 
   const handleReset = (type) => {
     const itemId = selectedItemIdRef.current
@@ -1042,22 +1244,14 @@ export default function PreviewViewport({
         {showTargetFeatures ? '✓ Target Features ON' : '🎯 Target Features'}
       </button>
       {modelReady && (
-        <UnityGizmoToolbar
-          mode={transformMode}
-          onModeChange={setTransformMode}
-          space={space}
-          onSpaceChange={setSpace}
-          snapEnabled={snapEnabled}
-          onToggleSnap={() => setSnapEnabled((s) => !s)}
-          gizmoSize={gizmoSize}
-          onSizeChange={setGizmoSize}
-          onReset={handleReset}
-          rectOrientation={rectOrientation}
-          onRectOrientationChange={(o) => {
-            setRectOrientation(o)
-            rectGizmoRef.current?.setOrientation(o)
-          }}
-        />
+        <button
+          type="button"
+          className="btn-reset-transform viewport-reset"
+          onClick={() => handleReset('all')}
+          title="Reset position, rotation and scale"
+        >
+          ↺ Reset
+        </button>
       )}
     </div>
   )

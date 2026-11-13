@@ -13,7 +13,7 @@ import {
 const OPTIMIZE_KEY = 'arOptimizeModels'
 const readOptimizePref = () => {
   try {
-    return localStorage.getItem(OPTIMIZE_KEY) !== '0'
+    return  localStorage.getItem(OPTIMIZE_KEY) !== '0'
   } catch {
     return true
   }

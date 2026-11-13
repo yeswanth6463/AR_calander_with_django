@@ -64,7 +64,6 @@ export default function ModelViewer({ exp }) {
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
 
-  const [manip, setManip] = useState({ mode: 'move', axis: null, scaleFactor: 1 })
   const [models, setModels] = useState(seedModels)
   const [activeId, setActiveId] = useState(initialModel?.id ?? null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -110,9 +109,6 @@ export default function ModelViewer({ exp }) {
     }
 
     apiRef.current = {
-      setMode: (mode) => manipulation?.setMode(mode),
-      setAxis: (axis) => manipulation?.setAxis(axis),
-      setScale: (value) => manipulation?.setScaleFactor(value),
       reset: () => manipulation?.reset(),
       swap: null,
     }
@@ -198,16 +194,6 @@ export default function ModelViewer({ exp }) {
           root: rootEl,
           canvas: glCanvas,
           camera,
-          onChange: (state) => {
-            if (disposed) return
-            setManip((prev) =>
-              prev.mode === state.mode &&
-              prev.axis === state.axis &&
-              prev.scaleFactor === state.scaleFactor
-                ? prev
-                : { mode: state.mode, axis: state.axis, scaleFactor: state.scaleFactor }
-            )
-          },
         })
         manipulation.setTarget(userGroup)
         // No tracking gate here: the model always floats in front of the
@@ -318,9 +304,6 @@ export default function ModelViewer({ exp }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started, initialModel])
 
-  const handleMode = (mode) => apiRef.current?.setMode(mode)
-  const handleAxis = (axis) => apiRef.current?.setAxis(axis)
-  const handleScale = (value) => apiRef.current?.setScale(value)
   const handleReset = () => apiRef.current?.reset()
 
   const selectModel = async (model) => {
@@ -433,14 +416,7 @@ export default function ModelViewer({ exp }) {
 
           {activeModel && (
             <ViewerManipulationHud
-              mode={manip.mode}
-              axis={manip.axis}
-              scaleFactor={manip.scaleFactor}
-              onMode={handleMode}
-              onAxis={handleAxis}
-              onScale={handleScale}
               onReset={handleReset}
-              label={activeModel.name}
             />
           )}
         </>

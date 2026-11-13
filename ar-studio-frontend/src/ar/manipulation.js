@@ -14,9 +14,8 @@ import * as THREE from 'three'
  *
  * Gestures:
  *   move    single-finger / left-drag across a camera-facing plane
- *   rotate  horizontal = yaw (Y), vertical = pitch (X), two-finger twist = roll (Z)
- *           axis pill locks rotation to one local axis
- *   scale   pinch (two fingers), mouse wheel, or the on-screen slider
+ *   rotate  two-finger pan or twist around the local Y axis
+ *   scale   pinch (two fingers) or mouse wheel
  *
  * Rotation and scaling compensate the group position so they happen around the
  * model's true centre (`pivot`), not the marker origin.
@@ -42,7 +41,7 @@ const offsetOf = (pivot, quat, scale, out) =>
 const isUiTarget = (el) =>
   !!el?.closest?.(
     'button, a, input, select, textarea, label, [role="button"], [data-ar-manip-ignore], ' +
-      '.viewer-manip-bar, .viewer-model-drawer, .viewer-models-toggle, .viewer-anim-toggle, ' +
+      '.viewer-model-drawer, .viewer-models-toggle, .viewer-anim-toggle, ' +
       '.anim-panel, .viewer-game-overlay, .viewer-error-overlay, .viewer-back'
   )
 
@@ -140,6 +139,13 @@ export function createManipulation({
       startDist: Math.max(1, Math.hypot(dx, dy)),
       startAngle: Math.atan2(dy, dx),
       startFactor: scaleFactor,
+      startCenterX: (a.x + b.x) / 2,
+      startCenterY: (a.y + b.y) / 2,
+      lastCenterX: (a.x + b.x) / 2,
+      lastCenterY: (a.y + b.y) / 2,
+      startA: { x: a.x, y: a.y },
+      startB: { x: b.x, y: b.y },
+      intent: null,
     }
   }
 
@@ -175,9 +181,9 @@ export function createManipulation({
     if (deltaY) applyRotation(tmpQuat.setFromAxisAngle(AXES.x, -deltaY * ROT_PER_PX))
   }
 
-  const rotateRoll = (angle) => {
+  const rotateY = (angle) => {
     if (!target) return
-    applyRotation(tmpQuat.setFromAxisAngle(AXES.z, -angle))
+    applyRotation(tmpQuat.setFromAxisAngle(AXES.y, angle))
   }
 
   /** Scale uniformly from `base.scale`, keeping the pivot point fixed. */
@@ -230,12 +236,51 @@ export function createManipulation({
       const dx = b.x - a.x
       const dy = b.y - a.y
       const dist = Math.max(1, Math.hypot(dx, dy))
-      applyScaleFactor(gesture.startFactor * (dist / gesture.startDist))
-      if (mode === 'rotate') {
-        const angle = Math.atan2(dy, dx)
-        rotateRoll(angle - gesture.startAngle)
-        gesture.startAngle = angle
+      const centerX = (a.x + b.x) / 2
+      const centerY = (a.y + b.y) / 2
+      const panX = centerX - gesture.startCenterX
+      const panY = centerY - gesture.startCenterY
+      const panDistance = Math.hypot(panX, panY)
+      const pinchDistance = Math.abs(dist - gesture.startDist)
+      const moveAX = a.x - gesture.startA.x
+      const moveAY = a.y - gesture.startA.y
+      const moveBX = b.x - gesture.startB.x
+      const moveBY = b.y - gesture.startB.y
+      const moveALength = Math.hypot(moveAX, moveAY)
+      const moveBLength = Math.hypot(moveBX, moveBY)
+      const movedTogether =
+        moveALength > 4 &&
+        moveBLength > 4 &&
+        moveAX * moveBX + moveAY * moveBY > moveALength * moveBLength * 0.25
+      const angle = Math.atan2(dy, dx)
+      let angleDelta = angle - gesture.startAngle
+      if (angleDelta > Math.PI) angleDelta -= Math.PI * 2
+      if (angleDelta < -Math.PI) angleDelta += Math.PI * 2
+      const twistDistance = Math.abs(angleDelta) * gesture.startDist / 2
+
+      if (!gesture.intent) {
+        if (
+          movedTogether ||
+          (panDistance > 8 && panDistance > pinchDistance * 1.25) ||
+          (twistDistance > 8 && pinchDistance <= 8)
+        ) {
+          gesture.intent = 'rotate'
+        } else if (pinchDistance > 8 && moveALength > 4 && moveBLength > 4) {
+          gesture.intent = 'scale'
+        }
       }
+
+      if (gesture.intent === 'rotate') {
+        const moveX = centerX - gesture.lastCenterX
+        const moveY = centerY - gesture.lastCenterY
+        rotateY(Math.abs(moveY) > Math.abs(moveX) ? -moveY * ROT_PER_PX : -moveX * ROT_PER_PX)
+        rotateY(-angleDelta)
+      } else if (gesture.intent === 'scale') {
+        applyScaleFactor(gesture.startFactor * (dist / gesture.startDist))
+      }
+      gesture.lastCenterX = centerX
+      gesture.lastCenterY = centerY
+      gesture.startAngle = angle
       return
     }
 
@@ -270,7 +315,7 @@ export function createManipulation({
   }
 
   const onWheel = (e) => {
-    if (!enabled || !target || mode !== 'scale') return
+    if (!enabled || !target) return
     if (isUiTarget(e.target)) return
     e.preventDefault()
     applyScaleFactor(scaleFactor * Math.exp(-e.deltaY * WHEEL_SCALE))

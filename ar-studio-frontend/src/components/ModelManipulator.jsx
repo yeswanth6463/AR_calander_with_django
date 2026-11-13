@@ -6,91 +6,23 @@ import { mb } from '../ar/modelAssets'
  * viewer. Purely presentational: the manipulation engine handles the gestures.
  */
 
-const MODES = [
-  { id: 'move', icon: '✥', label: 'Move' },
-  { id: 'rotate', icon: '⟳', label: 'Rotate' },
-  { id: 'scale', icon: '⤢', label: 'Scale' },
-]
-
-const AXIS_LABELS = [
-  { id: 'x', label: 'X' },
-  { id: 'y', label: 'Y' },
-  { id: 'z', label: 'Z' },
-]
-
-export function ViewerManipulationHud({
-  mode = 'move',
-  onMode,
-  axis = null,
-  onAxis,
-  scaleFactor = 1,
-  onScale,
-  onReset,
-  label = '3D model',
-}) {
+export function ViewerManipulationHud({ onReset }) {
   return (
-    <div className="viewer-manip-bar" role="toolbar" aria-label="3D model controls">
-      <div className="viewer-manip-head">
-        <span className="viewer-manip-name" title={label}>{label}</span>
-        <button type="button" className="viewer-manip-reset" onClick={onReset} title="Reset position, rotation and scale">
-          ↺ Reset
-        </button>
-      </div>
-
-      <div className="viewer-manip-row">
-        <div className="viewer-manip-modes">
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              className={`viewer-manip-mode ${mode === m.id ? 'active' : ''}`}
-              aria-pressed={mode === m.id}
-              onClick={() => onMode?.(m.id)}
-            >
-              <span aria-hidden="true">{m.icon}</span>
-              <span>{m.label}</span>
-            </button>
-          ))}
-        </div>
-
-        {mode === 'rotate' && (
-          <div className="viewer-manip-axis" role="group" aria-label="Rotation axis">
-            {AXIS_LABELS.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                className={`viewer-manip-pill ${axis === a.id ? 'active' : ''}`}
-                aria-pressed={axis === a.id}
-                onClick={() => onAxis?.(a.id)}
-              >
-                {a.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {mode === 'scale' && (
-        <div className="viewer-manip-scale">
-          <input
-            type="range"
-            min="0.1"
-            max="10"
-            step="0.05"
-            value={scaleFactor}
-            onChange={(e) => onScale?.(Number(e.target.value))}
-            aria-label="Model scale"
-          />
-          <span className="viewer-manip-scale-value">{scaleFactor.toFixed(2)}×</span>
-        </div>
-      )}
-
-      <div className="viewer-manip-tip">
-        {mode === 'move' && 'Drag to move · pinch to scale'}
-        {mode === 'rotate' && (axis ? `Swipe to rotate ${axis.toUpperCase()} axis` : 'Drag yaw / pitch · twist to roll')}
-        {mode === 'scale' && 'Pinch, scroll or use the slider'}
-      </div>
-    </div>
+    <button
+      type="button"
+      className="viewer-manip-reset"
+      onClick={onReset}
+      title="Reset position, rotation and scale"
+      aria-label="Reset model position, rotation and scale"
+      style={{
+        position: 'absolute',
+        right: '12px',
+        bottom: 'max(74px, calc(env(safe-area-inset-bottom) + 68px))',
+        zIndex: 16,
+      }}
+    >
+      ↺ Reset
+    </button>
   )
 }
 

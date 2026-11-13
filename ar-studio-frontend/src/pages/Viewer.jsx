@@ -363,8 +363,7 @@ function ImageViewer({ preloaded }) {
   const gameApiRef = useRef(null) // { start() } — set by the viewer effect
 
   // 3D model manipulation + model switcher (marker experience with a 3D item)
-  const modelApiRef = useRef(null) // { swap, setMode, setAxis, setScale, reset }
-  const [manip, setManip] = useState({ mode: 'move', axis: null, scaleFactor: 1 })
+  const modelApiRef = useRef(null) // { swap, reset }
   const [manipReady, setManipReady] = useState(false)
   const [models, setModels] = useState([])
   const [activeModelId, setActiveModelId] = useState(null)
@@ -1088,16 +1087,6 @@ function ImageViewer({ preloaded }) {
             root: glCanvas.parentElement,
             canvas: glCanvas,
             camera,
-            onChange: (state) => {
-              if (disposed) return
-              setManip((prev) =>
-                prev.mode === state.mode &&
-                prev.axis === state.axis &&
-                prev.scaleFactor === state.scaleFactor
-                  ? prev
-                  : { mode: state.mode, axis: state.axis, scaleFactor: state.scaleFactor }
-              )
-            },
           })
           manipulation.setTarget(primaryEntry.fit)
           if (primaryEntry.model) {
@@ -1194,9 +1183,6 @@ function ImageViewer({ preloaded }) {
 
         modelApiRef.current = {
           swap: swapPrimaryModel,
-          setMode: (mode) => manipulation?.setMode(mode),
-          setAxis: (axis) => manipulation?.setAxis(axis),
-          setScale: (value) => manipulation?.setScaleFactor(value),
           reset: () => manipulation?.reset(),
         }
 
@@ -1743,13 +1729,9 @@ function ImageViewer({ preloaded }) {
     }
   }, [publicId, preloaded])
 
-  const activeModel = models.find((m) => String(m.id) === String(activeModelId))
   const manipEnabled =
     isReady && !error && manipReady && targetFound && (!game || gamePhase === 'playing')
 
-  const handleManipMode = (mode) => modelApiRef.current?.setMode(mode)
-  const handleManipAxis = (axis) => modelApiRef.current?.setAxis(axis)
-  const handleManipScale = (value) => modelApiRef.current?.setScale(value)
   const handleManipReset = () => modelApiRef.current?.reset()
 
   const selectViewerModel = async (model) => {
@@ -1835,14 +1817,7 @@ function ImageViewer({ preloaded }) {
 
       {manipEnabled && (
         <ViewerManipulationHud
-          mode={manip.mode}
-          axis={manip.axis}
-          scaleFactor={manip.scaleFactor}
-          onMode={handleManipMode}
-          onAxis={handleManipAxis}
-          onScale={handleManipScale}
           onReset={handleManipReset}
-          label={activeModel?.name || '3D model'}
         />
       )}
 

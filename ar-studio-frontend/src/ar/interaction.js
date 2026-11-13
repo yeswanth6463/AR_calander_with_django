@@ -37,7 +37,7 @@ export function createTapInteraction({ root, canvas, camera }) {
   const isUiTarget = (el) =>
     !!el?.closest?.(
       'button, a, input, select, textarea, [role="button"], .anim-panel, .viewer-anim-toggle, ' +
-        '.viewer-manip-bar, .viewer-model-drawer, .viewer-models-toggle, .viewer-back'
+        '.viewer-model-drawer, .viewer-models-toggle, .viewer-back'
     )
 
   const onPointerDown = (e) => {
