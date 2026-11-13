@@ -18,6 +18,19 @@ from .service.target_bundle import bundle_payload, compile_status
 GAME_GOALS = {"none", "score", "collect_all"}
 MAX_GAME_SECONDS = 3600
 
+# 3D model uploads (the "Upload Custom 3D Model" feature). The client warns
+# above 50 MB so phones stay smooth; the server hard-stops at 100 MB.
+MODEL_3D_FORMATS = {"glb", "gltf"}
+MAX_MODEL_BYTES = 100 * 1024 * 1024
+MODEL_MIME_TYPES = {
+    "model/gltf-binary",
+    "model/gltf+json",
+    "application/gltf-binary",
+    "application/gltf+json",
+    "application/octet-stream",
+    "binary/octet-stream",
+}
+
 
 def _clean_text(value, limit=200):
     return str(value or "").strip()[:limit]
@@ -91,6 +104,34 @@ def project_extras(request, project):
         "sounds": sounds,
         "compiled_targets": bundle_payload(request, project),
     }
+
+
+def available_models_payload(request, project):
+    """Every active 3D asset in a project, for the viewer's model switcher.
+
+    Computed live (not from the publish snapshot) so a model uploaded from the
+    AR viewer appears immediately, without republishing.
+    """
+    payloads = []
+    assets = project.model_assets.filter(
+        format__in=MODEL_3D_FORMATS, is_active=True
+    ).order_by("created_at")
+    for asset in assets:
+        if not asset.model_file:
+            continue
+        try:
+            size = asset.model_file.size
+        except (OSError, ValueError):
+            size = None
+        payloads.append({
+            "id": str(asset.id),
+            "name": asset.name,
+            "url": request.build_absolute_uri(asset.model_file.url),
+            "format": asset.format,
+            "file_size": size,
+            "optimized": asset.optimized,
+        })
+    return payloads
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -191,12 +232,35 @@ class ModelAssetSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         uploaded_file = attrs.get("model_file")
-        asset_format = attrs.get("format") or getattr(self.instance, "format", None)
-        if uploaded_file and asset_format:
-            extension = uploaded_file.name.rsplit(".", 1)[-1].lower()
-            if extension != asset_format:
+        asset_format = (attrs.get("format") or getattr(self.instance, "format", None) or "").lower()
+        if not uploaded_file:
+            return attrs
+
+        extension = uploaded_file.name.rsplit(".", 1)[-1].lower() if "." in uploaded_file.name else ""
+        if extension != asset_format:
+            raise serializers.ValidationError({
+                "format": "Asset format must match the uploaded file extension."
+            })
+
+        if asset_format in MODEL_3D_FORMATS:
+            if extension not in MODEL_3D_FORMATS:
                 raise serializers.ValidationError({
-                    "format": "Asset format must match the uploaded file extension."
+                    "model_file": "Only .glb and .gltf 3D files are supported."
+                })
+            # Reject obvious non-3D uploads even when the filename is renamed.
+            content_type = (getattr(uploaded_file, "content_type", "") or "").lower().split(";")[0].strip()
+            if content_type and content_type not in MODEL_MIME_TYPES:
+                if content_type.startswith(("image/", "video/", "audio/")):
+                    raise serializers.ValidationError({
+                        "model_file": "That file is not a 3D model. Upload a .glb or .gltf file."
+                    })
+            size = getattr(uploaded_file, "size", None)
+            if size is not None and size > MAX_MODEL_BYTES:
+                raise serializers.ValidationError({
+                    "model_file": (
+                        f"3D models must be {MAX_MODEL_BYTES // (1024 * 1024)} MB or smaller. "
+                        "Compress the model or run the AR optimiser first."
+                    )
                 })
         return attrs
 

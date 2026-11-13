@@ -75,4 +75,10 @@ def clean_type_settings(project_type, value):
             "show_labels": bool(value.get("show_labels", True)),
             "default_label": label if label in OBJECT_LABELS else "cup",
         }
+    if project_type == "image_ar":
+        # target_image: 3D content appears on a scanned marker.
+        # user_model:   the viewer floats the project's uploaded models in
+        #               front of the camera and lets the user manipulate them.
+        mode = value.get("mode")
+        return {"mode": mode if mode in {"target_image", "user_model"} else "target_image"}
     return {}

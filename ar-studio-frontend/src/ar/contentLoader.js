@@ -24,12 +24,16 @@ const loadGltf = (url) => {
   return gltfCache.get(url)
 }
 
-/** Same-origin relative path for absolute media URLs from the API. */
+/** Use the frontend's media route for API-hosted files, including in dev where
+ * the API runs on a different origin and the browser would block the request. */
 export const relUrl = (url) => {
   if (!url) return ''
   try {
     const u = new URL(url, window.location.origin)
-    return u.origin === window.location.origin ? u.pathname + u.search : url
+    if (u.origin === window.location.origin || u.pathname.startsWith('/media/')) {
+      return u.pathname + u.search
+    }
+    return url
   } catch {
     return url
   }

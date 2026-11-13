@@ -19,7 +19,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import ARExperience, ExperienceItem, Project, ProjectPublication, PublishedExperience, User
-from .serializer import _item_payload, build_scene_snapshot, game_payload, project_extras
+from .serializer import (
+    _item_payload,
+    available_models_payload,
+    build_scene_snapshot,
+    game_payload,
+    project_extras,
+)
 from .service.target_bundle import ensure_compiled
 
 
@@ -275,7 +281,10 @@ def publish_project(request, project_id):
                 scale_z=exp.scale_z,
             )
         snap = build_scene_snapshot(request, exp)
-        if not snap["items"]:
+        user_model_mode = (
+            (project.type_settings or {}).get("mode") == "user_model"
+        )
+        if not snap["items"] and not user_model_mode:
             return Response(
                 {"error": f'"{exp.name or "Untitled"}" has no target and model to publish.'},
                 status=400,
@@ -390,14 +399,19 @@ def public_experience(request, public_id):
         for s in scenes:
             all_items.extend(s.get("items") or [])
         first = all_items[0] if all_items else None
+        project = bundle.project
+        live_settings = project.type_settings if isinstance(project.type_settings, dict) else {}
+        snapshot_settings = snapshot.get("type_settings") if isinstance(snapshot.get("type_settings"), dict) else {}
+        type_settings = {**snapshot_settings, **live_settings}
         return Response(
             {
                 "public_id": str(bundle.public_id),
                 "slug": bundle.slug,
-                "name": snapshot.get("name") or bundle.project.name,
+                "name": snapshot.get("name") or project.name,
                 "version": bundle.version,
                 "published_at": bundle.published_at,
-                "project": bundle.project.name,
+                "project": project.name,
+                "project_id": str(project.id),
                 "target": first["target"] if first else None,
                 "model": first["model"] if first else None,
                 "transform": first["transform"] if first else None,
@@ -407,8 +421,10 @@ def public_experience(request, public_id):
                 "scene_ids": list(bundle.scene_ids or []),
                 "scenes": scenes,
                 "game": snapshot.get("game"),
-                "project_type": snapshot.get("project_type") or bundle.project.project_type,
-                "type_settings": snapshot.get("type_settings") or {},
+                "project_type": snapshot.get("project_type") or project.project_type,
+                "type_settings": type_settings,
+                "mode": type_settings.get("mode") or "target_image",
+                "available_models": available_models_payload(request, project),
                 "sounds": snapshot.get("sounds") or [],
                 "compiled_targets": snapshot.get("compiled_targets"),
             }
@@ -495,6 +511,13 @@ def public_experience(request, public_id):
             "scale_xyz": [1.0, 1.0, 1.0],
         }
 
+    project = exp.project
+    live_settings = project.type_settings if isinstance(project.type_settings, dict) else {}
+    snapshot_settings = (snapshot or {}).get("type_settings")
+    if not isinstance(snapshot_settings, dict):
+        snapshot_settings = {}
+    type_settings = {**snapshot_settings, **live_settings}
+
     return Response(
         {
             "public_id": str(published.public_id),
@@ -502,15 +525,18 @@ def public_experience(request, public_id):
             "name": exp.name,
             "version": published.version,
             "published_at": published.published_at,
-            "project": exp.project.name,
+            "project": project.name,
+            "project_id": str(project.id),
             "target": top_target,
             "model": top_model,
             "transform": top_transform,
             "item_count": len(items),
             "items": items,
             "game": (snapshot or {}).get("game"),
-            "project_type": (snapshot or {}).get("project_type") or exp.project.project_type,
-            "type_settings": (snapshot or {}).get("type_settings") or {},
+            "project_type": (snapshot or {}).get("project_type") or project.project_type,
+            "type_settings": type_settings,
+            "mode": type_settings.get("mode") or "target_image",
+            "available_models": available_models_payload(request, project),
             "sounds": (snapshot or {}).get("sounds") or [],
             "compiled_targets": (snapshot or {}).get("compiled_targets"),
             "scene_count": 1 if items else 0,
