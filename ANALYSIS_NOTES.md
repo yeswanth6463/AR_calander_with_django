@@ -28,7 +28,7 @@ anywhere. The name is stale.
 | Lint | oxlint | `npm run lint` |
 | Deploy | Docker Compose: `db` → `web` (gunicorn) → `nginx` (SPA + proxy) | nginx 1.27 |
 
-### 1.3 Architecture / connectivity
+### 1.3 Architecture / connectivityok
 - Same-origin design, **no CORS package**. API base is hardcoded `/api`
   (`ar-studio-frontend/src/api.js:27`).
 - Dev: Vite on :5173 proxies `/api` + `/media` → `http://127.0.0.1:8000`
