@@ -135,7 +135,7 @@ a:hover { text-decoration: underline; }
   color: #fff;
 }
 label.btn { display: inline-flex; align-items: center; justify-content: center; }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled  { opacity: 0.45; cursor: not-allowed; }
 .btn.ghost { background: var(--panel); border-color: var(--border); color: var(--text); }
 .btn.danger { background: transparent; border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); color: var(--warn); }
 html[data-theme='light'] .btn.danger { background: #fff7f5; border-color: #f0c2b6; color: #b42318; }

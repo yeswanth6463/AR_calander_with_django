@@ -1402,9 +1402,22 @@ function ImageViewer({ preloaded }) {
          */
         const finishTick = (resultFor, now, diagnostics) => {
           let anyFound = false
+          let visibleTarget = groupList.find(
+            (g) => g.anchor?.visible && g.smooth && now - g.lastFound <= LOSS_GRACE_MS
+          )
+
           for (const g of groupList) {
+            if (visibleTarget && g !== visibleTarget) {
+              g.anchor.visible = false
+              g.smooth = null
+              g.cornerFilter = null
+              g.flow?.reset?.()
+              continue
+            }
+
             const r = resultFor(g)
             if (r?.found && applyDetection(g, r, now, r.viaFlow)) {
+              visibleTarget = g
               anyFound = true
             } else if (now - g.lastFound > LOSS_GRACE_MS) {
               if (g.smooth || g.anchor.visible) {
@@ -1413,7 +1426,7 @@ function ImageViewer({ preloaded }) {
                 g.flow.reset()
               }
               g.anchor.visible = false
-            } else if (g.anchor.visible) {
+            } else if (g === visibleTarget && g.anchor.visible) {
               anyFound = true
             }
           }

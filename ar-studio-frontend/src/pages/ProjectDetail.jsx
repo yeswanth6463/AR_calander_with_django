@@ -650,11 +650,11 @@ function InspectorPanel({
         )}
       </div>
 
-      {/* Flat Models Flow (Separate models with checkboxes) */}
+      {/* Target/content placements, each independently included when publishing. */}
       <div className="panel-section">
         <div className="panel-head">
           <div className="model-list-title">
-            <h2>{isUserModel ? 'Scenes' : 'Models'}</h2>
+            <h2>{isUserModel ? 'Scenes' : 'Target placements'}</h2>
             <span className="tiny muted">({experiences.length})</span>
           </div>
           <div className="model-list-actions">
@@ -668,7 +668,7 @@ function InspectorPanel({
               className="btn ghost small"
               onClick={() => setShowNewScene((prev) => !prev)}
             >
-              {showNewScene ? '✕ Cancel' : isUserModel ? '+ New scene' : '+ Add model'}
+              {showNewScene ? '✕ Cancel' : isUserModel ? '+ New scene' : '+ Add placement'}
             </button>
           </div>
         </div>
@@ -676,7 +676,7 @@ function InspectorPanel({
         {showNewScene && (
           <form className="model-add-form" onSubmit={create}>
             <div className="tiny muted" style={{ fontWeight: 600 }}>
-              {isUserModel ? 'New scene' : 'New 3D Model placement'}
+              {isUserModel ? 'New scene' : 'New target placement'}
             </div>
             {isUserModel ? (
               <p className="tiny muted">
@@ -712,7 +712,7 @@ function InspectorPanel({
               className="btn small add-wide"
               disabled={busy || (!isUserModel && (!targetId || !assetId))}
             >
-              {isUserModel ? 'Create scene' : 'Add model'}
+              {isUserModel ? 'Create scene' : 'Add placement'}
             </button>
           </form>
         )}
@@ -721,7 +721,7 @@ function InspectorPanel({
           <p className="muted tiny">
             {isUserModel
               ? 'No scenes yet. Click "+ New scene" so this project has a link to publish.'
-              : 'No models added yet. Click "+ Add model" to create one.'}
+              : 'No target placements yet. Click "+ Add placement" to pair a target with its model or video.'}
           </p>
         )}
 
