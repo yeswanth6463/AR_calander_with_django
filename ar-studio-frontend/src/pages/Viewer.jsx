@@ -49,7 +49,18 @@ import { relUrl } from '../ar/contentLoader'
 import { loadOpenCvOnPage } from '../ar/opencvRuntime'
 import { startTrackingWorkers, trackingWorkersSupported } from '../ar/trackingWorkers'
 import TrackingViewer from './TrackingViewer'
+import ModelViewer from './ModelViewer'
 import { createTapInteraction } from '../ar/interaction'
+import { createManipulation } from '../ar/manipulation'
+import {
+  disposeObject3D,
+  friendlyUploadError,
+  localCenterOf,
+  prepareModel,
+  uploadModelFile,
+  validateModelFile,
+} from '../ar/modelAssets'
+import { ModelSwitcherDrawer, ViewerManipulationHud } from '../components/ModelManipulator'
 import { playSound, runTapActions, tapActionsOf, usesScore } from '../ar/behaviors'
 import { describeGoal, formatTime, gameUsesScore, hasWon, isCollectible } from '../ar/game'
 import AnimationPanel from '../components/AnimationPanel'
@@ -318,6 +329,12 @@ export default function Viewer() {
   if (exp.project_type === 'face' || exp.project_type === 'object') {
     return <TrackingViewer key={publicId} exp={exp} />
   }
+  if (
+    exp.project_type === 'image_ar' &&
+    (exp.mode === 'user_model' || exp.type_settings?.mode === 'user_model')
+  ) {
+    return <ModelViewer key={publicId} exp={exp} />
+  }
   return <ImageViewer key={publicId} preloaded={exp} />
 }
 
@@ -344,6 +361,17 @@ function ImageViewer({ preloaded }) {
   const [timeLeft, setTimeLeft] = useState(null) // seconds, null = no clock
   const [endText, setEndText] = useState('') // custom win/lose text from game logic
   const gameApiRef = useRef(null) // { start() } — set by the viewer effect
+
+  // 3D model manipulation + model switcher (marker experience with a 3D item)
+  const modelApiRef = useRef(null) // { swap, reset }
+  const [manipReady, setManipReady] = useState(false)
+  const [models, setModels] = useState([])
+  const [activeModelId, setActiveModelId] = useState(null)
+  const [showModels, setShowModels] = useState(false)
+  const [swappingModel, setSwappingModel] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadPct, setUploadPct] = useState(0)
+  const [uploadError, setUploadError] = useState('')
 
   useEffect(() => {
     let disposed = false
@@ -890,6 +918,12 @@ function ImageViewer({ preloaded }) {
             targets: [...groups.keys()],
           })
         }
+        // Choose one 3D item as the model the manipulation HUD controls.
+        const primaryItem =
+          items.find((item) => item?.model?.url && !isFlatMedia(item.model.format)) || null
+        const primaryGroup = primaryItem ? groups.get(primaryItem.target.image_url) : null
+        let manipulation = null
+
         for (const item of items) {
           const group = groups.get(item.target.image_url)
           const fit = new THREE.Group()
@@ -902,7 +936,8 @@ function ImageViewer({ preloaded }) {
           applyARItemTransform(fit, transform)
           group.content.add(fit)
           tap.register(fit, item, group.anchor)
-          if (item.id != null) itemEntries.set(String(item.id), { item, fit })
+          const entry = { item, fit, model: null, ctl: null }
+          if (item.id != null) itemEntries.set(String(item.id), entry)
           if (item.behaviors?.start_hidden) fit.visible = false
 
           const modelUrl = item.model?.url
@@ -951,6 +986,11 @@ function ImageViewer({ preloaded }) {
                 const model = cloneSkinned(gltf.scene)
                 const size = fitModelToMarker(model)
                 fit.add(model)
+                entry.model = model
+                if (primaryItem && item === primaryItem) {
+                  manipulation?.setPivot(localCenterOf(fit, model))
+                  if (!disposed) setManipReady(true)
+                }
 
                 if (CONTACT_SHADOW_ENABLED) {
                   const shadow = createContactShadow(size.x, size.z)
@@ -1021,6 +1061,7 @@ function ImageViewer({ preloaded }) {
                   }
                   ctl.setLoop('repeat')
                   ctl.play()
+                  entry.ctl = ctl
                   anims.push({ ctl, group, item })
                   if (!disposed) {
                     setAnimController((prev) => prev || ctl)
@@ -1034,6 +1075,115 @@ function ImageViewer({ preloaded }) {
                 doneOne()
               })
           }
+        }
+
+        // ---- 3D model manipulation + model switcher --------------------------
+        // The fit group is the user-manipulation group: the tracker writes the
+        // anchor above it, so gestures can never disturb tracking.
+        const primaryEntry =
+          primaryItem && primaryItem.id != null ? itemEntries.get(String(primaryItem.id)) : null
+        if (primaryEntry) {
+          manipulation = createManipulation({
+            root: glCanvas.parentElement,
+            canvas: glCanvas,
+            camera,
+          })
+          manipulation.setTarget(primaryEntry.fit)
+          if (primaryEntry.model) {
+            manipulation.setPivot(localCenterOf(primaryEntry.fit, primaryEntry.model))
+          }
+        }
+
+        // Available project models for the drawer (published item first).
+        const modelList = Array.isArray(exp.available_models)
+          ? exp.available_models.filter((m) => m?.url)
+          : []
+        if (
+          primaryItem?.model?.url &&
+          !modelList.some((m) => m.url === primaryItem.model.url)
+        ) {
+          modelList.unshift({
+            id: `published:${primaryItem.model.url}`,
+            name: primaryItem.model.name || 'Published model',
+            url: primaryItem.model.url,
+            format: primaryItem.model.format || 'glb',
+          })
+        }
+        if (!disposed) {
+          setModels(modelList)
+          setActiveModelId(modelList.find((m) => m.url === primaryItem?.model?.url)?.id ?? null)
+        }
+
+        let primaryModelUrl = primaryItem?.model?.url ? rel(primaryItem.model.url) : ''
+        let swapToken = 0
+
+        const swapPrimaryModel = async (model) => {
+          if (!primaryEntry || !model?.url) throw new Error('No model selected.')
+          const token = ++swapToken
+          if (!disposed) setSwappingModel(true)
+          try {
+            const oldUrl = primaryModelUrl
+            const gltf = await loadGltf(rel(model.url))
+            if (disposed || token !== swapToken) return
+
+            const nextModel = cloneSkinned(gltf.scene)
+            fitModelToMarker(nextModel)
+
+            const oldModel = primaryEntry.model
+            const oldCtl = primaryEntry.ctl
+            primaryEntry.fit.add(nextModel)
+            primaryEntry.model = nextModel
+            primaryEntry.ctl = null
+
+            if (oldCtl) {
+              oldCtl.dispose()
+              const index = anims.findIndex((a) => a.item === primaryEntry.item)
+              if (index >= 0) anims.splice(index, 1)
+            }
+            if (oldModel) {
+              const nextUrl = rel(model.url)
+              // Another item may still render a clone of the same cached GLTF,
+              // and re-selecting a duplicate asset shares it too: only dispose
+              // when this URL is no longer referenced.
+              const shared = [...itemEntries.values()].some(
+                (e) => e !== primaryEntry && e.item?.model?.url && rel(e.item.model.url) === oldUrl
+              )
+              if (shared || nextUrl === oldUrl) oldModel.removeFromParent()
+              else {
+                disposeObject3D(oldModel)
+                gltfCache.delete(oldUrl)
+              }
+            }
+            primaryModelUrl = rel(model.url)
+
+            try {
+              await prepareModel(nextModel, { renderer, camera, scene })
+            } catch (err) {
+              console.warn('[AR viewer] model preparation skipped', err)
+            }
+            if (disposed || token !== swapToken) return
+
+            if (gltf.animations?.length) {
+              const ctl = createAnimationController({ scene: nextModel, animations: gltf.animations })
+              ctl.setLoop('repeat')
+              ctl.play()
+              primaryEntry.ctl = ctl
+              if (primaryGroup) anims.push({ ctl, group: primaryGroup, item: primaryEntry.item })
+              if (!disposed) setAnimController(ctl)
+            } else if (!disposed) {
+              setAnimController(anims[0]?.ctl || null)
+            }
+
+            manipulation?.setPivot(localCenterOf(primaryEntry.fit, nextModel))
+            if (!disposed) setManipReady(true)
+          } finally {
+            if (!disposed && token === swapToken) setSwappingModel(false)
+          }
+        }
+
+        modelApiRef.current = {
+          swap: swapPrimaryModel,
+          reset: () => manipulation?.reset(),
         }
 
         let raf = 0
@@ -1230,6 +1380,13 @@ function ImageViewer({ preloaded }) {
           tap.update(dt)
 
           trackTick()
+          if (manipulation) {
+            const canManipulate =
+              lastTrackingState && (!gameSettings || phase === 'playing')
+            if (manipulation.isEnabled() !== canManipulate) {
+              manipulation.setEnabled(canManipulate)
+            }
+          }
           // Render AFTER tracking: the model is drawn with the pose of the
           // exact frame now on the camera canvas.
           renderer.render(scene, camera)
@@ -1533,6 +1690,9 @@ function ImageViewer({ preloaded }) {
           for (const panel of mediaPanels) panel.dispose()
           mediaPanels.length = 0
           tap.dispose()
+          manipulation?.dispose()
+          manipulation = null
+          modelApiRef.current = null
           engine?.dispose()
           for (const audio of soundCache.values()) audio.pause()
           for (const g of groups.values()) {
@@ -1569,12 +1729,97 @@ function ImageViewer({ preloaded }) {
     }
   }, [publicId, preloaded])
 
+  const manipEnabled =
+    isReady && !error && manipReady && targetFound && (!game || gamePhase === 'playing')
+
+  const handleManipReset = () => modelApiRef.current?.reset()
+
+  const selectViewerModel = async (model) => {
+    if (!model || String(model.id) === String(activeModelId)) return
+    setUploadError('')
+    try {
+      await modelApiRef.current?.swap?.(model)
+      setActiveModelId(model.id)
+    } catch (err) {
+      setUploadError(err?.message || 'Could not load that model.')
+    }
+  }
+
+  const uploadViewerModel = async (file) => {
+    const { error: invalid, warning } = validateModelFile(file)
+    if (invalid) {
+      setUploadError(invalid)
+      return
+    }
+    if (warning && !window.confirm(warning)) return
+    if (!preloaded.project_id) {
+      setUploadError('This experience is not linked to a project.')
+      return
+    }
+    setUploadError('')
+    setUploading(true)
+    setUploadPct(0)
+    try {
+      const model = await uploadModelFile(preloaded.project_id, file, { onProgress: setUploadPct })
+      setModels((prev) => [...prev.filter((m) => String(m.id) !== String(model.id)), model])
+      await modelApiRef.current?.swap?.(model)
+      setActiveModelId(model.id)
+    } catch (err) {
+      setUploadError(friendlyUploadError(err))
+    } finally {
+      setUploading(false)
+      setUploadPct(0)
+    }
+  }
+
   return (
-    <div className="viewer-root">
+    <div className={`viewer-root ${manipEnabled ? 'has-manip' : ''}`}>
       <video ref={videoRef} className="viewer-camera" autoPlay muted playsInline />
       <canvas ref={camRef} className="viewer-camera-frame" />
       <canvas ref={glRef} className="gl" />
       <Link to="/" className="viewer-back">← AR Studio</Link>
+
+      {/* 3D model controls: shown once the tracked model is on screen */}
+      {isReady && !error && manipReady && (
+        <>
+          <button
+            type="button"
+            className={`viewer-models-toggle ${showModels ? 'active' : ''}`}
+            onClick={() => setShowModels((open) => !open)}
+            aria-expanded={showModels}
+            aria-controls="viewer-model-drawer"
+          >
+            <span aria-hidden="true">◆</span>
+            <span>Models</span>
+          </button>
+          <div id="viewer-model-drawer">
+            <ModelSwitcherDrawer
+              open={showModels}
+              onClose={() => setShowModels(false)}
+              models={models}
+              activeId={activeModelId}
+              onSelect={selectViewerModel}
+              onUpload={uploadViewerModel}
+              uploading={uploading}
+              busy={swappingModel}
+              uploadPct={uploadPct}
+              error={uploadError}
+              title="3D models"
+              hint={
+                swappingModel
+                  ? 'Loading model…'
+                  : 'Switch the model shown on the target, or upload a new .glb.'
+              }
+            />
+          </div>
+        </>
+      )}
+
+      {manipEnabled && (
+        <ViewerManipulationHud
+          onReset={handleManipReset}
+        />
+      )}
 
       {/* Target Found Alert Popup */}
       {foundAlert && (

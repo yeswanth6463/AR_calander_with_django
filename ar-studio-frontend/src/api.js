@@ -46,7 +46,9 @@ export async function api(path, { method = 'GET', body, formData } = {}) {
         const detail =
           (retryData && (retryData.error || retryData.detail)) ||
           `Request failed (${retry.status})`
-        throw new Error(detail)
+        const error = new Error(detail)
+        error.status = retry.status
+        throw error
       }
       return retryData
     }
@@ -62,7 +64,67 @@ export async function api(path, { method = 'GET', body, formData } = {}) {
             .join(' | ')
         : '') ||
       `Request failed (${res.status})`
-    throw new Error(detail)
+    const error = new Error(detail)
+    error.status = res.status
+    error.data = data
+    throw error
   }
   return data
+}
+
+/**
+ * Multipart upload with progress (fetch() cannot report upload progress).
+ * `onProgress` receives an integer percentage 0–100.
+ */
+export async function apiUpload(path, formData, { onProgress } = {}) {
+  const send = (token) =>
+    new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `/api${path}`)
+      xhr.withCredentials = true
+      if (token) xhr.setRequestHeader('X-CSRFToken', token)
+
+      xhr.upload.onprogress = (e) => {
+        if (!onProgress || !e.lengthComputable) return
+        onProgress(Math.max(0, Math.min(100, Math.round((e.loaded / e.total) * 100))))
+      }
+      xhr.onerror = () => reject(new Error('Upload failed — check your connection.'))
+      xhr.onabort = () => reject(new Error('Upload cancelled.'))
+      xhr.onload = () => {
+        let data = null
+        try {
+          data = xhr.responseText ? JSON.parse(xhr.responseText) : null
+        } catch {
+          data = null
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(xhr.status === 204 ? null : data)
+          return
+        }
+        const detail =
+          (data && (data.error || data.detail)) ||
+          (data && typeof data === 'object'
+            ? Object.entries(data)
+                .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+                .join(' | ')
+            : '') ||
+          `Upload failed (${xhr.status})`
+        const error = new Error(detail)
+        error.status = xhr.status
+        error.data = data
+        reject(error)
+      }
+      xhr.send(formData)
+    })
+
+  const token = (await ensureCsrf()) || ''
+  try {
+    return await send(token)
+  } catch (err) {
+    // Same CSRF-refresh retry as api(): a stale token must not look like
+    // "you are not signed in" on a large model upload.
+    if (err?.status !== 403) throw err
+    document.cookie = 'csrftoken=; Max-Age=0; path=/'
+    return send((await ensureCsrf()) || '')
+  }
 }

@@ -32,6 +32,7 @@ const SENSITIVITY = [
 export default function NewProjectWizard({ onCreate, onCancel }) {
   const [step, setStep] = useState(0)
   const [type, setType] = useState(null)
+  const [arExperienceMode, setArExperienceMode] = useState('target_image') // 'target_image' | 'user_model'
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [gameKind, setGameKind] = useState('collect_all')
@@ -52,7 +53,9 @@ export default function NewProjectWizard({ onCreate, onCancel }) {
     e.preventDefault()
     if (!name.trim()) return
     const body = { name: name.trim(), description: description.trim(), project_type: type }
-    if (type === 'game') {
+    if (type === 'image_ar') {
+      body.type_settings = { mode: arExperienceMode }
+    } else if (type === 'game') {
       body.game_settings = {
         enabled: true,
         goal: gameKind,
@@ -80,19 +83,29 @@ export default function NewProjectWizard({ onCreate, onCancel }) {
     }
   }
 
+  // Calculate total steps
+  const totalSteps = type === 'image_ar' ? 3 : 2
+
   return (
     <div className="wizard-backdrop" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
       <div className="wizard">
         <div className="wizard-head">
           <div>
-            <div className="tiny muted">New project · step {step + 1} of 2</div>
-            <h2 id="wizard-title">{step === 0 ? 'What do you want to create?' : `${meta.icon} ${meta.title}`}</h2>
+            <div className="tiny muted">New project · step {step + 1} of {totalSteps}</div>
+            <h2 id="wizard-title">
+              {step === 0
+                ? 'What do you want to create?'
+                : step === 1 && type === 'image_ar'
+                ? 'Choose AR Experience Mode'
+                : `${meta.icon} ${meta.title}`}
+            </h2>
           </div>
           <button type="button" className="btn ghost small" onClick={onCancel} aria-label="Close">
             ✕
           </button>
         </div>
 
+        {/* Step 0: Choose Project Type */}
         {step === 0 && (
           <div className="wizard-types">
             {PROJECT_TYPES.map((t) => (
@@ -113,7 +126,57 @@ export default function NewProjectWizard({ onCreate, onCancel }) {
           </div>
         )}
 
-        {step === 1 && (
+        {/* Step 1 for AR Experience: Choose Mode (Target Image vs User 3D Model) */}
+        {step === 1 && type === 'image_ar' && (
+          <div className="wizard-form">
+            <p className="wizard-blurb-lead" style={{ margin: '0 0 14px', color: 'var(--muted)', fontSize: '13px' }}>
+              Select how you want to build this AR Experience:
+            </p>
+            <div className="wizard-types">
+              <button
+                type="button"
+                className={`wizard-type ${arExperienceMode === 'target_image' ? 'active' : ''}`}
+                onClick={() => setArExperienceMode('target_image')}
+                style={{ cursor: 'pointer' }}
+              >
+                <span className="wizard-type-icon" aria-hidden="true">🎯</span>
+                <span className="wizard-type-title">Target Image Experience</span>
+                <span className="wizard-type-blurb">
+                  Anchor 3D content to a physical printed image, packaging, or marker (traditional marker-based tracking).
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`wizard-type ${arExperienceMode === 'user_model' ? 'active' : ''}`}
+                onClick={() => setArExperienceMode('user_model')}
+                style={{ cursor: 'pointer' }}
+              >
+                <span className="wizard-type-icon" aria-hidden="true">🧊</span>
+                <span className="wizard-type-title">Upload Custom 3D Model</span>
+                <span className="wizard-type-blurb">
+                  Upload your own 3D model (.glb / .gltf) directly. Manipulate with drag, rotate, and scale controls in AR.
+                </span>
+              </button>
+            </div>
+
+            <div className="wizard-actions" style={{ marginTop: '16px' }}>
+              <button type="button" className="btn ghost" onClick={() => setStep(0)}>
+                ← Back
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => setStep(2)}
+              >
+                Continue →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Final Step: Project Details Form */}
+        {((step === 1 && type !== 'image_ar') || (step === 2 && type === 'image_ar')) && (
           <form className="wizard-form" onSubmit={submit}>
             <label>
               Project name
@@ -126,7 +189,9 @@ export default function NewProjectWizard({ onCreate, onCancel }) {
 
             {type === 'image_ar' && (
               <p className="tiny muted wizard-note">
-                Next you’ll upload a target image (the picture people scan) and the 3D models or videos to show on it.
+                {arExperienceMode === 'user_model'
+                  ? '🧊 You will be able to upload your own 3D models (.glb/.gltf) and interactively drag, rotate, and scale them in AR.'
+                  : '🎯 Next you’ll upload a target image (the picture people scan) and the 3D models or videos to show on it.'}
               </p>
             )}
 
@@ -230,7 +295,12 @@ export default function NewProjectWizard({ onCreate, onCancel }) {
 
             {error && <div className="auth-error">{error}</div>}
             <div className="wizard-actions">
-              <button type="button" className="btn ghost" onClick={() => setStep(0)} disabled={busy}>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setStep(type === 'image_ar' ? 1 : 0)}
+                disabled={busy}
+              >
                 ← Back
               </button>
               <button className="btn primary" disabled={busy || !name.trim()}>

@@ -6,7 +6,7 @@ import AnimationPanel from '../components/AnimationPanel'
 import AssetsPanel from '../components/AssetsPanel'
 import LogicEditor from '../components/LogicEditor'
 import TrackingStudio from './TrackingStudio'
-import { isAudio, isPlaceable, projectTypeMeta } from '../ar/anchors'
+import { MODEL_FORMATS, isAudio, isPlaceable, projectTypeMeta } from '../ar/anchors'
 import BehaviorsPanel from '../components/BehaviorsPanel'
 import GameSettingsPanel from '../components/GameSettingsPanel'
 import PreviewViewport from '../components/PreviewViewport'
@@ -28,6 +28,7 @@ export default function ProjectDetail() {
   const [selectedId, setSelectedId] = useState(null)
   const [selectedItemId, setSelectedItemId] = useState(null)
   const [publishIds, setPublishIds] = useState(() => new Set())
+  const autoSelectedPublish = useRef(false)
 
   const load = useCallback(async () => {
     try {
@@ -52,11 +53,27 @@ export default function ProjectDetail() {
 
   useEffect(() => {
     const live = new Set(experiences.map((exp) => exp.id))
+    const userModel =
+      project?.project_type === 'image_ar' &&
+      project?.type_settings?.mode === 'user_model'
     setPublishIds((current) => {
       const next = new Set([...current].filter((id) => live.has(id)))
-      return next.size === current.size ? current : next
+      // A user-model scene is just the published link's container, so start
+      // with it checked instead of asking the creator to hunt for the box.
+      // Only once, so a deliberate "uncheck all" is never undone by a reload.
+      if (!next.size && userModel && experiences.length && !autoSelectedPublish.current) {
+        autoSelectedPublish.current = true
+        next.add(experiences[0].id)
+      }
+      // Compare membership, not just size: deleting one scene while another
+      // auto-checked would otherwise keep the stale (deleted) id selected.
+      if (next.size !== current.size) return next
+      for (const id of next) {
+        if (!current.has(id)) return next
+      }
+      return current
     })
-  }, [experiences])
+  }, [experiences, project])
 
   const selected = experiences.find((e) => e.id === selectedId) || null
   const selectedItems = useMemo(() => {
@@ -250,6 +267,10 @@ export default function ProjectDetail() {
     )
   }
   const isGame = project.project_type === 'game'
+  const isUserModel =
+    project.project_type === 'image_ar' &&
+    project.type_settings?.mode === 'user_model'
+  const modelCount = assets.filter((a) => MODEL_FORMATS.includes(a.format)).length
 
   const breadcrumb = (
     <>
@@ -298,7 +319,8 @@ export default function ProjectDetail() {
               onNotice={setNotice}
               selectedId={selectedItem?.model_asset}
               allowAudio={isGame}
-              title={isGame ? 'Game assets' : 'Models & Media'}
+              modelsOnly={isUserModel}
+              title={isUserModel ? '3D models' : isGame ? 'Game assets' : 'Models & Media'}
             />
           </div>
           <div className="side-dock">
@@ -330,7 +352,9 @@ export default function ProjectDetail() {
             onTransformChange={updateTransform}
           />
           <div className="viewport-hint">
-            {selected
+            {isUserModel
+              ? `${modelCount} 3D model${modelCount === 1 ? '' : 's'} uploaded · viewers move, rotate and scale them in AR`
+              : selected
               ? `${selected.name || 'experience'} — ${previewItems.length} item${previewItems.length === 1 ? '' : 's'} · drag to orbit · scroll to zoom`
               : 'Select a scene in the right panel'}
           </div>
@@ -372,6 +396,7 @@ export default function ProjectDetail() {
             }}
             publicationSlug={project?.publication_slug || ''}
             project={project}
+            isUserModel={isUserModel}
             onSaveLogic={async (game_logic) => {
               const saved = await api(`/projects/${id}/`, { method: 'PATCH', body: { game_logic } })
               setProject((current) => (current ? { ...current, game_logic: saved.game_logic } : current))
@@ -419,11 +444,13 @@ function InspectorPanel({
   onToggleAll,
   publicationSlug = '',
   project = null,
+  isUserModel = false,
   onSaveGame,
   onSaveLogic,
 }) {
   const [logicOpen, setLogicOpen] = useState(false)
   const isGame = project?.project_type === 'game'
+  const modelCount = assets.filter((a) => MODEL_FORMATS.includes(a.format)).length
   const allItems = experiences.flatMap((exp) => exp.items || [])
   const itemLabel = (item) => item.name || assets.find((a) => a.id === item.model_asset)?.name || 'Model'
   const logicItems = allItems.map((item) => ({
@@ -498,22 +525,29 @@ function InspectorPanel({
     setBusy(true)
     onError('')
     try {
+      const body = {
+        project: projectId,
+        name: expName.trim() || (isUserModel ? 'Custom models' : ''),
+      }
+      // A user-model experience is just a container for the published link:
+      // the viewer plays every uploaded 3D model, so no target/asset is picked.
+      if (!isUserModel) {
+        body.target_image = targetId
+        body.model_asset = assetId
+      }
       const d = await api('/experiences/', {
         method: 'POST',
-        body: {
-          project: projectId,
-          name: expName,
-          target_image: targetId,
-          model_asset: assetId,
-        },
+        body,
       })
-      onNotice('Experience created.')
+      onNotice(isUserModel ? 'Scene created for publishing.' : 'Experience created.')
       setTargetId('')
       setAssetId('')
       setExpName('')
       setShowNewScene(false)
       await reload()
       onSelect(d.id)
+      // Freshly created scenes are ready to publish; include them by default.
+      if (!publishIds?.has(d.id)) onTogglePublish?.(d.id)
     } catch (err) {
       onError(err.message)
     } finally {
@@ -529,12 +563,22 @@ function InspectorPanel({
       onError('Select at least one scene to publish.')
       return
     }
+    // A user-model link is only useful once there is a model to float in AR.
+    if (isUserModel && modelCount === 0) {
+      onError('Add at least one 3D model (.glb) in “3D models” before publishing.')
+      return
+    }
     setConfirmOpen(true)
   }
 
   const publish = async () => {
     if (!selectedScenes.length) {
       onError('Select at least one scene to publish.')
+      setConfirmOpen(false)
+      return
+    }
+    if (isUserModel && modelCount === 0) {
+      onError('Add at least one 3D model (.glb) in “3D models” before publishing.')
       setConfirmOpen(false)
       return
     }
@@ -588,7 +632,11 @@ function InspectorPanel({
       <div className="inspector-bar">
         <div className="inspector-bar-title">
           <strong>{selected?.name || 'Inspector'}</strong>
-          <span className="tiny muted">{sceneItemCount} item{sceneItemCount === 1 ? '' : 's'}</span>
+          <span className="tiny muted">
+            {isUserModel
+              ? `${modelCount} 3D model${modelCount === 1 ? '' : 's'}`
+              : `${sceneItemCount} item${sceneItemCount === 1 ? '' : 's'}`}
+          </span>
         </div>
         {selected && (
           <div className="inspector-bar-actions">
@@ -606,7 +654,7 @@ function InspectorPanel({
       <div className="panel-section">
         <div className="panel-head">
           <div className="model-list-title">
-            <h2>Models</h2>
+            <h2>{isUserModel ? 'Scenes' : 'Models'}</h2>
             <span className="tiny muted">({experiences.length})</span>
           </div>
           <div className="model-list-actions">
@@ -620,43 +668,61 @@ function InspectorPanel({
               className="btn ghost small"
               onClick={() => setShowNewScene((prev) => !prev)}
             >
-              {showNewScene ? '✕ Cancel' : '+ Add model'}
+              {showNewScene ? '✕ Cancel' : isUserModel ? '+ New scene' : '+ Add model'}
             </button>
           </div>
         </div>
 
         {showNewScene && (
           <form className="model-add-form" onSubmit={create}>
-            <div className="tiny muted" style={{ fontWeight: 600 }}>New 3D Model placement</div>
-            <select required value={targetId} onChange={(e) => setTargetId(e.target.value)}>
-              <option value="">Select target marker…</option>
-              {targets.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-            <select required value={assetId} onChange={(e) => setAssetId(e.target.value)}>
-              <option value="">Select 3D model or media…</option>
-              {assets.filter(isPlaceable).map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
+            <div className="tiny muted" style={{ fontWeight: 600 }}>
+              {isUserModel ? 'New scene' : 'New 3D Model placement'}
+            </div>
+            {isUserModel ? (
+              <p className="tiny muted">
+                Every uploaded 3D model appears in this scene&apos;s AR viewer. Add a
+                scene to give the published link a name.
+              </p>
+            ) : (
+              <>
+                <select required value={targetId} onChange={(e) => setTargetId(e.target.value)}>
+                  <option value="">Select target marker…</option>
+                  {targets.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <select required value={assetId} onChange={(e) => setAssetId(e.target.value)}>
+                  <option value="">Select 3D model or media…</option>
+                  {assets.filter(isPlaceable).map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
             <input
-              placeholder="Name (optional)"
+              placeholder={isUserModel ? 'Scene name (optional)' : 'Name (optional)'}
               value={expName}
               onChange={(e) => setExpName(e.target.value)}
             />
-            <button className="btn small add-wide" disabled={busy || !targetId || !assetId}>
-              Add model
+            <button
+              className="btn small add-wide"
+              disabled={busy || (!isUserModel && (!targetId || !assetId))}
+            >
+              {isUserModel ? 'Create scene' : 'Add model'}
             </button>
           </form>
         )}
 
         {experiences.length === 0 && !showNewScene && (
-          <p className="muted tiny">No models added yet. Click &quot;+ Add model&quot; to create one.</p>
+          <p className="muted tiny">
+            {isUserModel
+              ? 'No scenes yet. Click "+ New scene" so this project has a link to publish.'
+              : 'No models added yet. Click "+ Add model" to create one.'}
+          </p>
         )}
 
         <div className="models-flat-list">
@@ -670,6 +736,7 @@ function InspectorPanel({
             )
             const targetName = target?.name || 'Target'
             const assetName = asset?.name || 'Model'
+            const sceneName = exp.name || (isUserModel ? 'Custom model scene' : 'Untitled scene')
 
             return (
               <div
@@ -681,19 +748,36 @@ function InspectorPanel({
                   type="checkbox"
                   className="scene-check"
                   checked={publishIds?.has(exp.id) ?? false}
-                  aria-label={`Include ${targetName} ${assetName} in publish`}
+                  aria-label={
+                    isUserModel
+                      ? `Include ${sceneName} in publish`
+                      : `Include ${targetName} ${assetName} in publish`
+                  }
                   onClick={(e) => e.stopPropagation()}
                   onChange={() => onTogglePublish?.(exp.id)}
                 />
                 <div className="model-item-content">
-                  <div className="model-item-title">
-                    <span className="target-name">{targetName}</span>
-                    <span className="model-sep"> · </span>
-                    <span className="model-name">{assetName}</span>
-                  </div>
-                  {exp.name && exp.name !== `${targetName} · ${assetName}` ? (
-                    <div className="tiny muted">{exp.name}</div>
-                  ) : null}
+                  {isUserModel ? (
+                    <>
+                      <div className="model-item-title">
+                        <span className="model-name">{sceneName}</span>
+                      </div>
+                      <div className="tiny muted">
+                        {modelCount} 3D model{modelCount === 1 ? '' : 's'} available in AR
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="model-item-title">
+                        <span className="target-name">{targetName}</span>
+                        <span className="model-sep"> · </span>
+                        <span className="model-name">{assetName}</span>
+                      </div>
+                      {exp.name && exp.name !== `${targetName} · ${assetName}` ? (
+                        <div className="tiny muted">{exp.name}</div>
+                      ) : null}
+                    </>
+                  )}
                 </div>
                 <span className={`badge ${exp.status === 'published' ? 'ok' : ''}`}>
                   {exp.status}
@@ -701,7 +785,7 @@ function InspectorPanel({
                 <button
                   type="button"
                   className="icon-btn"
-                  title="Delete model"
+                  title={isUserModel ? 'Delete scene' : 'Delete model'}
                   onClick={(e) => {
                     e.stopPropagation()
                     remove(exp.id)
@@ -716,7 +800,8 @@ function InspectorPanel({
 
         {experiences.length > 0 && (
           <p className="tiny muted scene-count">
-            {publishIds?.size || 0} of {experiences.length} model
+            {publishIds?.size || 0} of {experiences.length}{' '}
+            {isUserModel ? 'scene' : 'model'}
             {experiences.length === 1 ? '' : 's'} selected
           </p>
         )}
@@ -859,8 +944,16 @@ function InspectorPanel({
             <div className="tiny muted">
               One link for the checked scenes
               {publishIds?.size ? ` (${publishIds.size} selected)` : ''}.
-              {sceneItemCount ? '' : ''}
+              {isUserModel
+                ? ' Viewers get every uploaded 3D model and can move, rotate and scale it in AR.'
+                : ''}
             </div>
+            {isUserModel && modelCount === 0 && (
+              <div className="tiny publish-blocker" role="alert">
+                ⚠ No 3D model uploaded yet. Add a .glb in “3D models” before publishing —
+                otherwise the link opens with nothing to show.
+              </div>
+            )}
             <div className="tiny muted">Custom link name</div>
             <input
               placeholder="e.g. my-drone-demo"

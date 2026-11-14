@@ -376,3 +376,141 @@ class AssetOptimizeTests(APITestCase):
         }, format="multipart")
         self.assertEqual(ok.status_code, 200, ok.data)
         self.assertEqual(ok.data["file_size"], 99)
+
+
+@override_settings(MEDIA_ROOT=MEDIA)
+class CustomModelUploadTests(APITestCase):
+    """The marker-less "custom 3D model" mode and 3D upload validation."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="modeler", email="modeler@example.com", password="pw-12345678"
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_user_model_publish_and_live_available_models(self):
+        res = self.client.post(
+            "/api/projects/",
+            {
+                "name": "Custom model",
+                "project_type": "image_ar",
+                "type_settings": {"mode": "user_model"},
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        project = Project.objects.get(id=res.data["id"])
+        self.assertEqual(project.type_settings["mode"], "user_model")
+
+        upload = self.client.post(
+            "/api/assets/",
+            {
+                "project": str(project.id),
+                "name": "robot",
+                "format": "glb",
+                "model_file": SimpleUploadedFile("robot.glb", b"glb-data"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(upload.status_code, 201, upload.data)
+
+        exp = self.client.post(
+            "/api/experiences/", {"project": str(project.id), "name": "Floating"}, format="json"
+        )
+        self.assertEqual(exp.status_code, 201, exp.data)
+
+        # A user-model scene is allowed to publish with no placed items.
+        pub = self.client.post(
+            f"/api/projects/{project.id}/publish/",
+            {"scene_ids": [exp.data["id"]]},
+            format="json",
+        )
+        self.assertIn(pub.status_code, (200, 201), pub.data)
+
+        self.client.force_authenticate(None)
+        data = self.client.get(f"/api/public/{pub.data['published_experience_id']}/").data
+        self.assertEqual(data["mode"], "user_model")
+        self.assertEqual(data["project_id"], str(project.id))
+        self.assertEqual(data["items"], [])
+        self.assertEqual(len(data["available_models"]), 1)
+        model = data["available_models"][0]
+        self.assertEqual(model["name"], "robot")
+        self.assertEqual(model["format"], "glb")
+        self.assertEqual(model["file_size"], 8)
+        self.assertTrue(model["url"].endswith(".glb"))
+
+        # Uploaded after publishing: appears immediately (no republish needed).
+        self.client.force_authenticate(self.user)
+        second = self.client.post(
+            "/api/assets/",
+            {
+                "project": str(project.id),
+                "name": "planet",
+                "format": "glb",
+                "model_file": SimpleUploadedFile("planet.glb", b"second"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(second.status_code, 201, second.data)
+        self.client.force_authenticate(None)
+        data = self.client.get(f"/api/public/{pub.data['published_experience_id']}/").data
+        self.assertEqual(
+            [m["name"] for m in data["available_models"]], ["robot", "planet"]
+        )
+
+    def test_model_upload_rejects_wrong_extension_and_non_3d_content(self):
+        project = Project.objects.create(
+            user=self.user,
+            name="P",
+            project_type="image_ar",
+            type_settings={"mode": "user_model"},
+        )
+        wrong_ext = self.client.post(
+            "/api/assets/",
+            {
+                "project": str(project.id),
+                "name": "fake",
+                "format": "glb",
+                "model_file": SimpleUploadedFile("fake.png", PNG, content_type="image/png"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(wrong_ext.status_code, 400, wrong_ext.data)
+
+        image_bytes = self.client.post(
+            "/api/assets/",
+            {
+                "project": str(project.id),
+                "name": "fake",
+                "format": "glb",
+                "model_file": SimpleUploadedFile("fake.glb", PNG, content_type="image/png"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(image_bytes.status_code, 400, image_bytes.data)
+        self.assertIn("not a 3D model", str(image_bytes.data))
+
+    def test_model_upload_enforces_size_limit(self):
+        from unittest.mock import patch
+
+        project = Project.objects.create(
+            user=self.user,
+            name="P",
+            project_type="image_ar",
+            type_settings={"mode": "user_model"},
+        )
+        with patch("api.serializer.MAX_MODEL_BYTES", 10):
+            too_big = self.client.post(
+                "/api/assets/",
+                {
+                    "project": str(project.id),
+                    "name": "big",
+                    "format": "glb",
+                    "model_file": SimpleUploadedFile(
+                        "big.glb", b"x" * 11, content_type="model/gltf-binary"
+                    ),
+                },
+                format="multipart",
+            )
+        self.assertEqual(too_big.status_code, 400, too_big.data)
+        self.assertIn("MB or smaller", str(too_big.data))
