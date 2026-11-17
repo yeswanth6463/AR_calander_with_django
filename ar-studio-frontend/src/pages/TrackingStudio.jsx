@@ -453,6 +453,7 @@ export default function TrackingStudio({ project, assets, experiences, reload, e
                         }
                       }}
                       onBlur={(e) => {
+                        if (e.target.value === '') return // Number('') is 0
                         const v = Number(e.target.value)
                         if (Number.isFinite(v) && (!field.startsWith('scale') || v > 0)) patchItem(selected.id, { [field]: v }, true)
                       }}

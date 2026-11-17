@@ -1144,19 +1144,21 @@ function TransformRow({ label, fields, onChange }) {
           key={`${field}-${index}`}
           type="number"
           step={field.startsWith('rotation_') ? 1 : 0.01}
-          min={field === 'scale' ? 0.01 : undefined}
+          min={field.startsWith('scale') ? 0.01 : undefined}
           value={Number((Number(value) || 0).toFixed(3))}
           aria-label={`${label} ${'XYZ'[index]}`}
           onChange={(event) => {
             if (event.target.value === '') return
             const nextValue = Number(event.target.value)
-            if (Number.isFinite(nextValue) && (field !== 'scale' || nextValue > 0)) {
+            if (Number.isFinite(nextValue) && (!field.startsWith('scale') || nextValue > 0)) {
               onChange({ [field]: nextValue }, false)
             }
           }}
           onBlur={(event) => {
+            // Number('') is 0 — an emptied field must not commit 0.
+            if (event.target.value === '') return
             const nextValue = Number(event.target.value)
-            if (Number.isFinite(nextValue) && (field !== 'scale' || nextValue > 0)) {
+            if (Number.isFinite(nextValue) && (!field.startsWith('scale') || nextValue > 0)) {
               onChange({ [field]: nextValue }, true)
             }
           }}

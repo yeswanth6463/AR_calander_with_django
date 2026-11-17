@@ -19,9 +19,9 @@ services:
       context: ./AR_cal
     restart: unless-stopped
     environment:
-      SECRET_KEY: ${SECRET_KEY:-insecure-change-me-in-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env (see .env.example)}
       DEBUG: ${DEBUG:-False}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174}
       POSTGRES_DB: ${POSTGRES_DB:-ar_platform}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}

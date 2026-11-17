@@ -12,11 +12,25 @@ from rest_framework.decorators import (
     authentication_classes,
     permission_classes,
     parser_classes,
+    throttle_classes,
 )
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
+
+
+class LoginRateThrottle(AnonRateThrottle):
+    """Per-IP limit on login attempts (rate in DEFAULT_THROTTLE_RATES['login'])."""
+
+    scope = "login"
+
+
+class RegisterRateThrottle(AnonRateThrottle):
+    """Per-IP limit on account creation (rate in DEFAULT_THROTTLE_RATES['register'])."""
+
+    scope = "register"
 
 from .models import ARExperience, ExperienceItem, Project, ProjectPublication, PublishedExperience, User
 from .serializer import (
@@ -50,6 +64,7 @@ class CSRFView(APIView):
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
+@throttle_classes([RegisterRateThrottle])
 @parser_classes([JSONParser])
 def register(request):
     email = (request.data.get("email") or "").strip().lower()
@@ -86,6 +101,7 @@ def register(request):
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
+@throttle_classes([LoginRateThrottle])
 @parser_classes([JSONParser])
 def login_view(request):
     identifier = (request.data.get("email") or "").strip()

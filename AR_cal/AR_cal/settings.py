@@ -13,15 +13,15 @@ from decouple import Csv, config
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config(
-    "SECRET_KEY",
-    default="django-insecure-il6tkh#byqa048@0@hittka2@fi9b17_&$=7yh-3a2iuoqqgq)",
-)
+# No default on purpose: a missing SECRET_KEY must fail loudly, never fall back
+# to a value that is committed to git.
+SECRET_KEY = config("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config ("DEBUG", default=True, cast=bool)
+# Opt in with DEBUG=True in a local .env.
+DEBUG = config("DEBUG", default=False, cast=bool)
 
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*", cast=Csv())
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="localhost,127.0.0.1", cast=Csv())
 
 # Vite often jumps from 5173 to 5174+ when a port is busy. Always trust local
 # studio origins so DELETE/PATCH are not blocked by CSRF origin checks.
@@ -103,7 +103,7 @@ DATABASES = {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": config("POSTGRES_DB", default=""),
         "USER": config("POSTGRES_USER", default="postgres"),
-        "PASSWORD": config("POSTGRES_PASSWORD", default="vitaperf"),
+        "PASSWORD": config("POSTGRES_PASSWORD"),
         "HOST": config("POSTGRES_HOST", default="localhost"),
         "PORT": config("POSTGRES_PORT", default="5433"),
         "CONN_MAX_AGE": 60,
@@ -171,6 +171,13 @@ MAILERS = {
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Per-IP limits for the anonymous auth endpoints (see api/views_auth.py).
+    # The default LocMemCache is per-process, so with N gunicorn workers the
+    # effective limit is up to N x the rate; use a shared cache for a strict one.
+    "DEFAULT_THROTTLE_RATES": {
+        "login": config("LOGIN_THROTTLE_RATE", default="10/min"),
+        "register": config("REGISTER_THROTTLE_RATE", default="5/hour"),
+    },
 }
 
 SPECTACULAR_SETTINGS = {

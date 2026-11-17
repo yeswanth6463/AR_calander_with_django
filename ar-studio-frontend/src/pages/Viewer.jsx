@@ -899,7 +899,12 @@ function ImageViewer({ preloaded }) {
                     resolve(gltf)
                   },
                   undefined,
-                  reject
+                  (err) => {
+                    // Don't cache failures: a transient network error must not
+                    // make this model unloadable until a full page reload.
+                    gltfCache.delete(url)
+                    reject(err)
+                  }
                 )
               })
             )
@@ -1714,6 +1719,12 @@ function ImageViewer({ preloaded }) {
           }
           releaseTrackerRuntime()
           releaseFlowRuntime()
+          // Terminates the detect/flow Web Workers (each holds an OpenCV runtime);
+          // without this every visit leaks two workers.
+          trackingClient?.dispose()
+          trackingClient = null
+          for (const bmp of frameBitmaps.values()) bmp?.close?.()
+          frameBitmaps.clear()
           video.removeEventListener('resize', syncVideoSize)
           window.removeEventListener('resize', syncVideoSize)
           stream.getTracks().forEach((t) => t.stop())
