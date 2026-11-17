@@ -1050,16 +1050,16 @@ function ImageViewer({ preloaded }) {
                 }
                 if (gltf.animations?.length) {
                   const ctl = createAnimationController({ scene: model, animations: gltf.animations })
-                  // Default to continuous repeat in the AR viewer so models loop smoothly
-                  ctl.setLoop('repeat')
+                  // Loop continuously, except build-up animations which play once and hold
+                  ctl.setLoop(ctl.defaultLoop)
                   if (item.animation) {
                     ctl.applySettings({
                       ...item.animation,
-                      loop: 'repeat',
+                      loop: ctl.defaultLoop,
                       autoplay: true,
                     })
                   }
-                  ctl.setLoop('repeat')
+                  ctl.setLoop(ctl.defaultLoop)
                   ctl.play()
                   entry.ctl = ctl
                   anims.push({ ctl, group, item })
@@ -1165,7 +1165,7 @@ function ImageViewer({ preloaded }) {
 
             if (gltf.animations?.length) {
               const ctl = createAnimationController({ scene: nextModel, animations: gltf.animations })
-              ctl.setLoop('repeat')
+              ctl.setLoop(ctl.defaultLoop)
               ctl.play()
               primaryEntry.ctl = ctl
               if (primaryGroup) anims.push({ ctl, group: primaryGroup, item: primaryEntry.item })

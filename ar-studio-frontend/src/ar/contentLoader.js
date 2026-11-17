@@ -87,7 +87,7 @@ export async function loadContent(url, format, { align = 'center' } = {}) {
   let animation = null
   if (gltf.animations?.length) {
     animation = createAnimationController({ scene: model, animations: gltf.animations })
-    animation.setLoop('repeat')
+    animation.setLoop(animation.defaultLoop)
     animation.play()
   }
 

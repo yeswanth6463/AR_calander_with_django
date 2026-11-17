@@ -6,12 +6,34 @@ const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
 
 const TICK_MS = 120
 
+/**
+ * "Build-up" animations (e.g. house.glb: every part starts at scale 0 and
+ * grows into place) leave the model invisible at t = 0. Looping them makes
+ * the model vanish and rebuild forever, so they should play once and hold
+ * the finished pose instead.
+ */
+export function isBuildUpAnimation(clips = []) {
+  let scaleTracks = 0
+  let fromZero = 0
+  for (const clip of clips) {
+    for (const track of clip.tracks || []) {
+      if (!track.name.endsWith('.scale') || track.values.length < 3) continue
+      scaleTracks++
+      if (Math.abs(track.values[0]) < 1e-4 && Math.abs(track.values[1]) < 1e-4 && Math.abs(track.values[2]) < 1e-4) {
+        fromZero++
+      }
+    }
+  }
+  return scaleTracks > 0 && fromZero / scaleTracks >= 0.5
+}
+
 export function createAnimationController(gltf) {
   const clips = (gltf.animations || []).filter((c) => c.duration > 0)
   const mixer = new THREE.AnimationMixer(gltf.scene)
   const actions = clips.map((c) => mixer.clipAction(c))
   const listeners = new Set()
   const configListeners = new Set()
+  const defaultLoop = isBuildUpAnimation(clips) ? 'once' : 'repeat'
 
   // Default: prefer real motion clips (> 0.08s) over 1-frame dummy static clips (<= 0.08s)
   // while ensuring multi-part models (e.g. drones, cranes) animate together.
@@ -45,7 +67,7 @@ export function createAnimationController(gltf) {
     clips: clips.map((c, i) => ({ name: c.name || `Take ${i + 1}`, duration: c.duration })),
     index: 0,
     playing: false,
-    loop: 'repeat', // Default to repeating so animations loop continuously
+    loop: defaultLoop, // Loop by default; build-up animations play once and hold
     speed: 1,
     time: 0,
     duration: cachedDuration,
@@ -156,6 +178,8 @@ export function createAnimationController(gltf) {
   }
 
   const api = {
+    /** 'once' for build-up animations, otherwise 'repeat'. */
+    defaultLoop,
     getState,
     getConfig,
     subscribe(fn) {

@@ -234,7 +234,7 @@ export default function ModelViewer({ exp }) {
 
             if (gltf.animations?.length) {
               currentCtl = createAnimationController({ scene: nextRoot, animations: gltf.animations })
-              currentCtl.setLoop('repeat')
+              currentCtl.setLoop(currentCtl.defaultLoop)
               currentCtl.play()
             }
 
