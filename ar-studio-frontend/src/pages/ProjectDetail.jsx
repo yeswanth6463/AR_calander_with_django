@@ -467,6 +467,11 @@ function InspectorPanel({
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [published, setPublished] = useState(null)
   const [itemTargetId, setItemTargetId] = useState('')
+  // Inline "Edit placement" form: which row is open + its draft values.
+  const [editId, setEditId] = useState(null)
+  const [editTargetId, setEditTargetId] = useState('')
+  const [editAssetId, setEditAssetId] = useState('')
+  const [editName, setEditName] = useState('')
   const [itemAssetId, setItemAssetId] = useState('')
   const [showNewScene, setShowNewScene] = useState(experiences.length === 0)
 
@@ -607,6 +612,46 @@ function InspectorPanel({
     }
   }
 
+  const startEdit = (exp) => {
+    const first = exp.items?.[0]
+    onSelect(exp.id)
+    setEditId(exp.id)
+    setEditTargetId(String(first?.target_image ?? exp.target_image ?? ''))
+    setEditAssetId(String(first?.model_asset ?? exp.model_asset ?? ''))
+    setEditName(exp.name || '')
+  }
+
+  const saveEdit = async (e, exp) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setBusy(true)
+    onError('')
+    try {
+      const body = { name: editName.trim() }
+      if (!isUserModel) {
+        body.target_image = editTargetId
+        body.model_asset = editAssetId
+      }
+      await api(`/experiences/${exp.id}/`, { method: 'PATCH', body })
+      // The viewer reads the scene items, so the first item (the placement's
+      // own target + model) must follow. Its transform is kept.
+      const first = exp.items?.[0]
+      if (!isUserModel && first?.id) {
+        await api(`/items/${first.id}/`, {
+          method: 'PATCH',
+          body: { target_image: editTargetId, model_asset: editAssetId },
+        })
+      }
+      setEditId(null)
+      onNotice('Placement updated.')
+      await reload()
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const remove = async (experienceId) => {
     const id = experienceId || selected?.id
     if (!id || !confirm('Delete this experience?')) return
@@ -738,9 +783,10 @@ function InspectorPanel({
             const assetName = asset?.name || 'Model'
             const sceneName = exp.name || (isUserModel ? 'Custom model scene' : 'Untitled scene')
 
+            const isEditing = editId === exp.id
             return (
+              <div key={exp.id} className="model-item-wrap">
               <div
-                key={exp.id}
                 className={`model-item-row ${isSelected ? 'active' : ''}`}
                 onClick={() => onSelect(exp.id)}
               >
@@ -784,6 +830,20 @@ function InspectorPanel({
                 </span>
                 <button
                   type="button"
+                  className={`icon-btn ${isEditing ? 'on' : ''}`}
+                  title={isUserModel ? 'Edit scene' : 'Edit placement'}
+                  aria-label={isUserModel ? 'Edit scene' : 'Edit placement'}
+                  aria-expanded={isEditing}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (isEditing) setEditId(null)
+                    else startEdit(exp)
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
                   className="icon-btn"
                   title={isUserModel ? 'Delete scene' : 'Delete model'}
                   onClick={(e) => {
@@ -793,6 +853,60 @@ function InspectorPanel({
                 >
                   ✕
                 </button>
+              </div>
+              {isEditing && (
+                <form className="model-add-form model-edit-form" onSubmit={(e) => saveEdit(e, exp)}>
+                  <div className="tiny muted" style={{ fontWeight: 600 }}>
+                    {isUserModel ? 'Edit scene' : 'Edit placement'}
+                  </div>
+                  {!isUserModel && (
+                    <>
+                      <label className="tiny muted">
+                        Target image
+                        <select required value={editTargetId} onChange={(e) => setEditTargetId(e.target.value)}>
+                          <option value="">Select target marker…</option>
+                          {targets.map((t) => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="tiny muted">
+                        Model / media
+                        <select required value={editAssetId} onChange={(e) => setEditAssetId(e.target.value)}>
+                          <option value="">Select 3D model or media…</option>
+                          {assets.filter(isPlaceable).map((a) => (
+                            <option key={a.id} value={a.id}>{a.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </>
+                  )}
+                  <label className="tiny muted">
+                    Name
+                    <input
+                      placeholder="Name (optional)"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                    />
+                  </label>
+                  <div className="model-edit-actions">
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={() => setEditId(null)}
+                      disabled={busy}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="btn small"
+                      disabled={busy || (!isUserModel && (!editTargetId || !editAssetId))}
+                    >
+                      {busy ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </form>
+              )}
               </div>
             )
           })}

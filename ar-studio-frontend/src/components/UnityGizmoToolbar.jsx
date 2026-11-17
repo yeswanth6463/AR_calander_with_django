@@ -12,6 +12,9 @@ export default function UnityGizmoToolbar({
   onReset,
   rectOrientation = 'horizontal',
   onRectOrientationChange,
+  // Set false when the host already binds Q/W/E/R/T/Y/X — otherwise X would
+  // toggle the space twice per keypress and cancel itself out.
+  enableHotkeys = true,
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
@@ -48,6 +51,11 @@ export default function UnityGizmoToolbar({
       if (e.ctrlKey || e.metaKey || e.altKey) return
 
       const key = e.key.toLowerCase()
+      if (key === 'escape' && menuOpen) {
+        setMenuOpen(false)
+        return
+      }
+      if (!enableHotkeys) return
       if (key === 'q') onModeChange('view')
       else if (key === 'w') onModeChange('translate')
       else if (key === 'e') onModeChange('rotate')
@@ -55,12 +63,11 @@ export default function UnityGizmoToolbar({
       else if (key === 't') onModeChange('rect')
       else if (key === 'y') onModeChange('universal')
       else if (key === 'x') onSpaceChange(space === 'world' ? 'local' : 'world')
-      else if (key === 'escape' && menuOpen) setMenuOpen(false)
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [onModeChange, onSpaceChange, space, menuOpen])
+  }, [onModeChange, onSpaceChange, space, menuOpen, enableHotkeys])
 
   const tools = [
     {

@@ -4,6 +4,7 @@ import { createGltfLoader } from '../ar/gltfLoader'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { createAnimationController } from '../ar/animation'
+import { applyTextureBudget } from '../ar/textureBudget'
 import { createMediaPanel } from '../ar/mediaPanel'
 import { isFlatMedia } from '../ar/anchors'
 import {
@@ -17,6 +18,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { createRectGizmo } from './RectGizmo'
 import { drawFeaturePreview } from '../ar/targetFeaturePreview'
 import ViewAxisGizmo from './ViewAxisGizmo'
+import UnityGizmoToolbar from './UnityGizmoToolbar'
 
 // API returns absolute URLs on :8000 — strip origin so requests go through
 // the Vite proxy (same-origin, no CORS).
@@ -35,6 +37,7 @@ export default function PreviewViewport({
   onTransformChange,
 }) {
   const mountRef = useRef(null)
+  const rendererRef = useRef(null)
   const worldRef = useRef(null)
   const controlsRef = useRef(null)
   const modelGroupRef = useRef(null)
@@ -49,12 +52,12 @@ export default function PreviewViewport({
   const [modelState, setModelState] = useState('')
   const [transformMode, setTransformMode] = useState('translate')
   const [space, setSpace] = useState('world')
-  const snapEnabled = false
-  const gizmoSize = 1
+  const [snapEnabled, setSnapEnabled] = useState(false)
+  const [gizmoSize, setGizmoSize] = useState(1)
   const [modelReady, setModelReady] = useState(false)
   const [showTargetFeatures, setShowTargetFeatures] = useState(false)
   const targetPlanesRef = useRef(new Map())
-  const rectOrientation = 'horizontal'
+  const [rectOrientation, setRectOrientation] = useState('horizontal')
   const onTransformChangeRef = useRef(onTransformChange)
   const onAnimationControllerRef = useRef(onAnimationController)
   const transformModeRef = useRef(transformMode)
@@ -165,6 +168,7 @@ export default function PreviewViewport({
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.ACESFilmicToneMapping
     renderer.toneMappingExposure = 1.05
+    rendererRef.current = renderer
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
@@ -210,64 +214,77 @@ export default function PreviewViewport({
     // ray-hits the Y/Z cone or the center box first, so the wrong axis scales.
     // Replace them with small boxes sitting exactly on the visible cubes, slim the
     // translate cones, and enlarge the tiny stock scale cubes (0.08 -> 0.12).
-    const sharpenPickers = (controls, hideCenterCube = false) => {
+    //
+    // three r186 builds every handle as a single Mesh (direct child of
+    // gizmo/picker[mode]) whose geometry is pre-baked at its axis offset, so
+    // replacements must be baked the same way: build along +Y, then orient.
+    //
+    // `universal` (the dedicated scale control of the Transform tool): drop the
+    // negative-side handles, the center cube, and shorten the axis lines to a
+    // stub just behind each cube, so scale never overlaps the move arrows.
+    const AXIS_NAMES = ['X', 'Y', 'Z']
+    const tmpCenter = new THREE.Vector3()
+    const axisSign = (mesh) => {
+      mesh.geometry.computeBoundingBox()
+      mesh.geometry.boundingBox.getCenter(tmpCenter)
+      return tmpCenter[mesh.name.toLowerCase()] < -0.001 ? -1 : 1
+    }
+    // Geometry authored along +Y -> rotated onto the mesh's axis/side.
+    const orient = (geo, name, sign) => {
+      if (sign < 0) geo.rotateZ(Math.PI)
+      if (name === 'X') geo.rotateZ(-Math.PI / 2)
+      else if (name === 'Z') geo.rotateX(Math.PI / 2)
+      return geo
+    }
+    // build(mesh, sign) -> new +Y geometry, null to remove, undefined to keep.
+    const rebuildAxisMeshes = (root, build) => {
+      if (!root) return
+      root.children
+        .filter((c) => c.isMesh && AXIS_NAMES.includes(c.name))
+        .forEach((mesh) => {
+          const sign = axisSign(mesh)
+          const geo = build(mesh, sign)
+          if (geo === undefined) return
+          const old = mesh.geometry
+          if (geo === null) root.remove(mesh)
+          else mesh.geometry = orient(geo, mesh.name, sign)
+          old?.dispose?.()
+        })
+    }
+    const isCylinder = (mesh) => mesh.geometry?.type === 'CylinderGeometry'
+
+    const sharpenPickers = (controls, { hideCenterCube = false, universal = false } = {}) => {
       const gz = controls._gizmo
       if (!gz) return
 
-      const axisDirs = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] }
-
-      const scalePicker = gz.picker?.scale
-      if (scalePicker) {
-        Object.entries(axisDirs).forEach(([name, d]) => {
-          const holder = scalePicker.getObjectByName(name)
-          if (!holder?.isGroup) return
-          const mat = holder.children.find((c) => c.isMesh)?.material
-          holder.children.slice().forEach((c) => {
-            holder.remove(c)
-            c.geometry?.dispose?.()
-          })
-          const box = new THREE.BoxGeometry(0.2, 0.2, 0.2)
-          ;[1, -1].forEach((sign) => {
-            const m = new THREE.Mesh(box, mat)
-            m.name = name
-            m.position.set(d[0] * 0.5 * sign, d[1] * 0.5 * sign, d[2] * 0.5 * sign)
-            holder.add(m)
-          })
-        })
-        scalePicker.getObjectByName('XYZ')?.traverse((c) => {
-          if (!c.isMesh) return
-          c.geometry?.dispose?.()
-          c.geometry = new THREE.BoxGeometry(0.16, 0.16, 0.16)
-        })
-      }
-
-      const translatePicker = gz.picker?.translate
-      if (translatePicker) {
-        Object.keys(axisDirs).forEach((name) => {
-          const holder = translatePicker.getObjectByName(name)
-          if (!holder?.isGroup) return
-          holder.children.forEach((c) => {
-            if (!c.isMesh || c.geometry?.type !== 'CylinderGeometry') return
-            c.geometry.dispose()
-            c.geometry = new THREE.CylinderGeometry(0.08, 0, 0.6, 4)
-          })
-        })
-      }
-
-      const scaleGizmo = gz.gizmo?.scale
-      if (scaleGizmo) {
-        Object.keys(axisDirs).forEach((name) => {
-          scaleGizmo.getObjectByName(name)?.children.slice().forEach((c) => {
-            if (!c.isMesh || c.geometry?.type !== 'BoxGeometry') return
-            c.geometry.dispose()
-            c.geometry = new THREE.BoxGeometry(0.12, 0.12, 0.12)
-          })
-        })
-        if (hideCenterCube) {
-          scaleGizmo.getObjectByName('XYZ')?.traverse((c) => {
-            if (c.isMesh) c.visible = false
-          })
+      // Scale picker: small box exactly on each visible cube (stock = fat
+      // 0.6-long cone from the center that swallows the move arrow).
+      rebuildAxisMeshes(gz.picker?.scale, (_m, sign) =>
+        universal && sign < 0 ? null : new THREE.BoxGeometry(0.2, 0.2, 0.2).translate(0, 0.5, 0)
+      )
+      // Translate picker: slim cone along the arrow.
+      rebuildAxisMeshes(gz.picker?.translate, (m) =>
+        isCylinder(m) ? new THREE.CylinderGeometry(0.08, 0, 0.6, 4).translate(0, 0.3, 0) : undefined
+      )
+      // Visible scale handles: bigger cubes; in universal mode short stub lines.
+      rebuildAxisMeshes(gz.gizmo?.scale, (m, sign) => {
+        if (universal && sign < 0) return null
+        if (isCylinder(m)) {
+          return universal
+            ? new THREE.CylinderGeometry(0.0075, 0.0075, 0.12, 3).translate(0, 0.44, 0)
+            : undefined
         }
+        return new THREE.BoxGeometry(0.12, 0.12, 0.12).translate(0, 0.5, 0)
+      })
+
+      if (hideCenterCube) {
+        gz.gizmo?.scale?.children.forEach((c) => {
+          if (c.name === 'XYZ') c.visible = false
+        })
+        // A hidden center cube must not stay clickable on top of the move cube.
+        gz.picker?.scale?.children
+          .filter((c) => c.name === 'XYZ')
+          .forEach((c) => gz.picker.scale.remove(c))
       }
     }
 
@@ -363,7 +380,7 @@ export default function PreviewViewport({
       child.geometry?.dispose?.()
     })
 
-    sharpenPickers(transformControls, false)
+    sharpenPickers(transformControls)
 
     // 2. Rotation TransformControls (for Rotate tool & Universal multi-tool mode)
     const rotateControls = new TransformControls(camera, renderer.domElement)
@@ -413,7 +430,7 @@ export default function PreviewViewport({
         child.renderOrder = 9997
       }
     })
-    sharpenPickers(scaleControls, true)
+    sharpenPickers(scaleControls, { hideCenterCube: true, universal: true })
     scene.add(scaleHelper)
     scaleControlsRef.current = scaleControls
 
@@ -789,7 +806,9 @@ export default function PreviewViewport({
     }
     if (sc) {
       sc.setSpace(space)
-      sc.setSize(gizmoSize * 1.55)
+      // Move arrows end at ~0.69 (0.6 x 1.15); at 2.0 the scale cubes sit at
+      // 1.0 and their pick boxes start at 0.8 — a clear gap past the arrow tips.
+      sc.setSize(gizmoSize * 2.0)
     }
 
     if (snapEnabled) {
@@ -934,7 +953,7 @@ export default function PreviewViewport({
   useEffect(() => {
     syncGizmos()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transformMode, space, modelReady])
+  }, [transformMode, space, snapEnabled, gizmoSize, modelReady, rectOrientation])
 
   const handleReset = (type) => {
     const itemId = selectedItemIdRef.current
@@ -1109,9 +1128,19 @@ export default function PreviewViewport({
       } else {
         createGltfLoader().load(
           rel(asset.model_file),
-          (gltf) => {
+          async (gltf) => {
             if (stale()) return
             const model = gltf.scene
+            // Big studio models (e.g. house.glb: 31 × 2048² maps ≈ 520 MB of
+            // RGBA) can exceed what the GPU will allocate; the failed upload
+            // leaves materials on their flat base colour. Shrink before the
+            // first upload, exactly like the public viewer does.
+            try {
+              await applyTextureBudget(model, { renderer: rendererRef.current })
+            } catch (err) {
+              console.warn('[studio preview] texture budget skipped', err)
+            }
+            if (stale()) return
             const size = fitModelToMarker(model)
             modelGroup.add(model)
 
@@ -1156,7 +1185,10 @@ export default function PreviewViewport({
               setModelState(`loading model… ${pct}%`)
             }
           },
-          () => finishOne(false)
+          (err) => {
+            console.error('Could not load model asset:', asset.model_file, err)
+            finishOne(false)
+          }
         )
       }
     }
@@ -1243,6 +1275,22 @@ export default function PreviewViewport({
         <span className="features-toggle-dot" />
         {showTargetFeatures ? '✓ Target Features ON' : '🎯 Target Features'}
       </button>
+      {modelReady && (
+        <UnityGizmoToolbar
+          mode={transformMode}
+          onModeChange={setTransformMode}
+          space={space}
+          onSpaceChange={setSpace}
+          snapEnabled={snapEnabled}
+          onToggleSnap={() => setSnapEnabled((s) => !s)}
+          gizmoSize={gizmoSize}
+          onSizeChange={setGizmoSize}
+          onReset={handleReset}
+          rectOrientation={rectOrientation}
+          onRectOrientationChange={setRectOrientation}
+          enableHotkeys={false}
+        />
+      )}
       {modelReady && (
         <button
           type="button"
