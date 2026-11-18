@@ -514,3 +514,124 @@ class CustomModelUploadTests(APITestCase):
             )
         self.assertEqual(too_big.status_code, 400, too_big.data)
         self.assertIn("MB or smaller", str(too_big.data))
+
+
+@override_settings(MEDIA_ROOT=MEDIA)
+class AdminSecurityAndRBACTests(APITestCase):
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        shutil.rmtree(MEDIA, ignore_errors=True)
+
+    def setUp(self):
+        from .models import Organization, OrganizationMember
+
+        self.customer = User.objects.create_user(
+            username="cust", email="cust@example.com", password="pw", role="customer"
+        )
+        self.super_admin = User.objects.create_user(
+            username="super", email="super@example.com", password="pw", role="super_admin"
+        )
+        self.finance_admin = User.objects.create_user(
+            username="fin", email="fin@example.com", password="pw", role="finance_admin"
+        )
+        self.content_admin = User.objects.create_user(
+            username="content", email="content@example.com", password="pw", role="content_admin"
+        )
+        self.support_admin = User.objects.create_user(
+            username="support", email="support@example.com", password="pw", role="support_admin"
+        )
+
+        # Organization & Projects
+        self.org1 = Organization.objects.create(name="Org One", owner=self.customer)
+        self.org2 = Organization.objects.create(name="Org Two", owner=self.super_admin)
+        self.project1 = Project.objects.create(user=self.customer, organization=self.org1, name="P1")
+        self.project2 = Project.objects.create(user=self.super_admin, organization=self.org2, name="P2")
+        self.asset1 = ModelAsset.objects.create(
+            project=self.project1, name="Asset 1", format="glb",
+            approval_status="pending", is_shared=False,
+            model_file=SimpleUploadedFile("a1.glb", b"test")
+        )
+
+    def test_unauthenticated_blocked_from_all_admin_endpoints(self):
+        self.client.logout()
+        endpoints = [
+            ("/api/v1/admin/overview/", "get"),
+            ("/api/v1/admin/users/", "get"),
+            ("/api/v1/admin/organizations/", "get"),
+            ("/api/v1/admin/projects/", "get"),
+            ("/api/v1/admin/assets/moderation/", "get"),
+        ]
+        for url, method in endpoints:
+            res = getattr(self.client, method)(url)
+            self.assertIn(res.status_code, [401, 403], f"{url} allowed unauthenticated access")
+
+    def test_customer_forbidden_from_admin_endpoints(self):
+        self.client.force_authenticate(self.customer)
+        endpoints = [
+            ("/api/v1/admin/overview/", "get"),
+            ("/api/v1/admin/users/", "get"),
+            (f"/api/v1/admin/users/{self.customer.id}/role/", "patch"),
+            ("/api/v1/admin/organizations/", "get"),
+            ("/api/v1/admin/projects/", "get"),
+            ("/api/v1/admin/assets/moderation/", "get"),
+        ]
+        for url, method in endpoints:
+            res = getattr(self.client, method)(url, data={}, format="json")
+            self.assertEqual(res.status_code, 403, f"{url} did not return 403 for customer")
+
+    def test_content_admin_can_moderate_assets_but_not_manage_users_or_orgs(self):
+        self.client.force_authenticate(self.content_admin)
+        # Blocked from users and organizations
+        res_users = self.client.get("/api/v1/admin/users/")
+        self.assertEqual(res_users.status_code, 403)
+        res_orgs = self.client.get("/api/v1/admin/organizations/")
+        self.assertEqual(res_orgs.status_code, 403)
+
+        # Allowed to view and moderate assets
+        res_assets = self.client.get("/api/v1/admin/assets/moderation/?status=pending")
+        self.assertEqual(res_assets.status_code, 200)
+        self.assertEqual(len(res_assets.data["assets"]), 1)
+
+        # Approve asset
+        approve_res = self.client.post(
+            "/api/v1/admin/assets/moderation/",
+            {"asset_id": str(self.asset1.id), "action": "approve"},
+            format="json"
+        )
+        self.assertEqual(approve_res.status_code, 200)
+        self.asset1.refresh_from_db()
+        self.assertEqual(self.asset1.approval_status, "approved")
+        self.assertTrue(self.asset1.is_shared)
+
+    def test_only_super_admin_can_update_roles_and_suspend_users(self):
+        # Finance admin tries to update role -> 403
+        self.client.force_authenticate(self.finance_admin)
+        res_fin = self.client.patch(
+            f"/api/v1/admin/users/{self.customer.id}/role/",
+            {"role": "super_admin"},
+            format="json"
+        )
+        self.assertEqual(res_fin.status_code, 403)
+
+        # Super admin updates role -> 200
+        self.client.force_authenticate(self.super_admin)
+        res_sup = self.client.patch(
+            f"/api/v1/admin/users/{self.customer.id}/role/",
+            {"role": "finance_admin", "is_active": False},
+            format="json"
+        )
+        self.assertEqual(res_sup.status_code, 200)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.role, "finance_admin")
+        self.assertFalse(self.customer.is_active)
+
+    def test_organization_data_isolation_in_standard_api(self):
+        # Customer cannot see projects belonging to other users
+        self.client.force_authenticate(self.customer)
+        res = self.client.get("/api/projects/")
+        self.assertEqual(res.status_code, 200)
+        project_ids = [p["id"] for p in res.data]
+        self.assertIn(str(self.project1.id), project_ids)
+        self.assertNotIn(str(self.project2.id), project_ids)
+

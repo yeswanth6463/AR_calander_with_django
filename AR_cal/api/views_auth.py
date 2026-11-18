@@ -36,6 +36,9 @@ def user_payload(user):
         "username": user.username,
         "first_name": user.first_name,
         "last_name": user.last_name,
+        "role": getattr(user, "role", "customer"),
+        "customer_type": getattr(user, "customer_type", "individual"),
+        "storage_used_bytes": getattr(user, "storage_used_bytes", 0),
     }
 
 

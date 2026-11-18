@@ -7,6 +7,18 @@ import uuid
 from .anchors import ANCHOR_TYPES, PROJECT_TYPES
 
 class User(AbstractUser):
+    ROLE_CHOICES = [
+        ("super_admin", "Super Admin"),
+        ("finance_admin", "Finance Admin"),
+        ("content_admin", "Content Admin"),
+        ("support_admin", "Support Admin"),
+        ("customer", "Customer"),
+    ]
+    CUSTOMER_TYPE_CHOICES = [
+        ("individual", "Individual Customer"),
+        ("enterprise", "Enterprise Member"),
+    ]
+
     email = models.EmailField(unique=True)
     phone_number = models.CharField(
         max_length=20,
@@ -18,10 +30,107 @@ class User(AbstractUser):
         blank=True,
         null=True,
     )
+    role = models.CharField(
+        max_length=20,
+        choices=ROLE_CHOICES,
+        default="customer",
+        help_text="Administrative or customer role for platform access control.",
+    )
+    customer_type = models.CharField(
+        max_length=20,
+        choices=CUSTOMER_TYPE_CHOICES,
+        default="individual",
+        help_text="Customer account tier type.",
+    )
+    storage_used_bytes = models.BigIntegerField(
+        default=0,
+        help_text="Total storage consumed by user assets in bytes.",
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.email
+        return f"{self.email} ({self.role})"
+
+
+class Organization(models.Model):
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    name = models.CharField(max_length=150)
+    slug = models.SlugField(max_length=180, unique=True, blank=True)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="owned_organizations",
+        help_text="Organization administrator / creator.",
+    )
+    is_active = models.BooleanField(default=True)
+    storage_limit_bytes = models.BigIntegerField(
+        default=21474836480,  # 20 GB default enterprise quota
+        help_text="Maximum storage allocation for organization in bytes.",
+    )
+    storage_used_bytes = models.BigIntegerField(
+        default=0,
+        help_text="Current total storage used by organization assets.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base_slug = slugify(self.name) or "org"
+            candidate = base_slug
+            counter = 2
+            while Organization.objects.filter(slug=candidate).exists():
+                candidate = f"{base_slug}-{counter}"
+                counter += 1
+            self.slug = candidate
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
+class OrganizationMember(models.Model):
+    MEMBER_ROLE_CHOICES = [
+        ("org_admin", "Organization Admin"),
+        ("editor", "Editor"),
+        ("viewer", "Viewer"),
+    ]
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="members",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="organization_memberships",
+    )
+    role = models.CharField(
+        max_length=20,
+        choices=MEMBER_ROLE_CHOICES,
+        default="editor",
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("organization", "user")
+        ordering = ["joined_at"]
+
+    def __str__(self):
+        return f"{self.user.email} - {self.organization.name} ({self.role})"
 
 class Project(models.Model):
     id = models.UUIDField(
@@ -33,6 +142,14 @@ class Project(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="ar_projects",
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="projects",
+        null=True,
+        blank=True,
+        help_text="Owning enterprise workspace if created under an organization.",
     )
     name = models.CharField(max_length=150)
     slug = models.SlugField(max_length=180, unique=True, blank=True)
@@ -76,6 +193,24 @@ class Project(models.Model):
     )
     targets_compiled_at = models.DateTimeField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
+    is_shared = models.BooleanField(
+        default=False,
+        help_text="Whether this asset has been published to the shared marketplace.",
+    )
+    approval_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("private", "Private Asset"),
+            ("pending", "Pending Admin Approval"),
+            ("approved", "Approved for Shared Marketplace"),
+            ("rejected", "Rejected by Admin"),
+        ],
+        default="private",
+    )
+    file_size_bytes = models.BigIntegerField(
+        default=0,
+        help_text="File size in bytes for storage tracking.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -164,6 +299,24 @@ class ModelAsset(models.Model):
         help_text="Set when the studio ran the AR model optimiser before upload.",
     )
     is_active = models.BooleanField(default=True)
+    is_shared = models.BooleanField(
+        default=False,
+        help_text="Whether this asset has been published to the shared marketplace.",
+    )
+    approval_status = models.CharField(
+        max_length=20,
+        choices=[
+            ("private", "Private Asset"),
+            ("pending", "Pending Admin Approval"),
+            ("approved", "Approved for Shared Marketplace"),
+            ("rejected", "Rejected by Admin"),
+        ],
+        default="private",
+    )
+    file_size_bytes = models.BigIntegerField(
+        default=0,
+        help_text="File size in bytes for storage tracking.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

@@ -24,6 +24,14 @@ from .views_auth import (
     register,
     unpublish_experience,
 )
+from .views_admin import (
+    admin_dashboard_overview,
+    admin_users_list,
+    admin_user_update_role,
+    admin_organizations_view,
+    admin_projects_list,
+    admin_assets_moderation,
+)
 
 router = DefaultRouter()
 router.register("projects", ProjectViewSet, basename="project")
@@ -79,4 +87,11 @@ urlpatterns = [
         public_experience,
         name="public-experience",
     ),
+    # Administration Endpoints
+    path("v1/admin/overview/", admin_dashboard_overview, name="admin-overview"),
+    path("v1/admin/users/", admin_users_list, name="admin-users"),
+    path("v1/admin/users/<int:user_id>/role/", admin_user_update_role, name="admin-user-role"),
+    path("v1/admin/organizations/", admin_organizations_view, name="admin-organizations"),
+    path("v1/admin/projects/", admin_projects_list, name="admin-projects"),
+    path("v1/admin/assets/moderation/", admin_assets_moderation, name="admin-assets-moderation"),
 ]

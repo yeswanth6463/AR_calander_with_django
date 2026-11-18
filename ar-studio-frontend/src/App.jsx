@@ -5,6 +5,21 @@ import Login from './pages/Login'
 import Projects from './pages/Projects'
 import ProjectDetail from './pages/ProjectDetail'
 import Viewer from './pages/Viewer'
+import AdminLayout from './admin/AdminLayout'
+import AdminOverview from './admin/AdminOverview'
+import AdminUsers from './admin/AdminUsers'
+import AdminOrganizations from './admin/AdminOrganizations'
+import AdminProjects from './admin/AdminProjects'
+import AdminAssets from './admin/AdminAssets'
+
+function AdminProtected({ children }) {
+  const { user, loading } = useAuth()
+  if (loading) return <div className="center muted">Loading…</div>
+  if (!user) return <Navigate to="/login" replace />
+  const isAdm = user.role && user.role !== 'customer'
+  if (!isAdm) return <Navigate to="/" replace />
+  return children
+}
 
 function Protected({ children }) {
   const { user, loading } = useAuth()
@@ -48,6 +63,11 @@ function Shell({ children }) {
         <ThemeToggle />
         {user && (
           <>
+            {user.role && user.role !== 'customer' && (
+              <Link to="/admin" className="btn small" style={{ background: '#2563eb', color: '#fff', textDecoration: 'none', marginRight: '6px' }}>
+                Admin Hub
+              </Link>
+            )}
             <span className="user-chip" title={user.email}>{user.email}</span>
             <button
               className="btn ghost"
@@ -91,6 +111,21 @@ export default function App() {
           </Protected>
         }
       />
+      {/* Admin Dashboard Routes */}
+      <Route
+        path="/admin"
+        element={
+          <AdminProtected>
+            <AdminLayout />
+          </AdminProtected>
+        }
+      >
+        <Route index element={<AdminOverview />} />
+        <Route path="users" element={<AdminUsers />} />
+        <Route path="organizations" element={<AdminOrganizations />} />
+        <Route path="projects" element={<AdminProjects />} />
+        <Route path="assets" element={<AdminAssets />} />
+      </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
